@@ -112,12 +112,18 @@ func (m *Manager) List(ctx context.Context, includeLatestVersion bool) ([]Extens
 
 		if _, err = os.Stat(filepath.Join(m.dir, f.Name(), manifestName)); err == nil {
 			extensions = append(extensions, &githubExtension{
-				baseExtension: baseExtension{path: filepath.Join(m.dir, f.Name(), f.Name())},
-				client:        m.github,
+				baseExtension: baseExtension{
+					path: filepath.Join(m.dir, f.Name(), f.Name()),
+					name: strings.TrimPrefix(f.Name(), Prefix),
+				},
+				client: m.github,
 			})
 		} else {
 			extensions = append(extensions, &localExtension{
-				baseExtension: baseExtension{path: filepath.Join(m.dir, f.Name(), f.Name())},
+				baseExtension: baseExtension{
+					path: filepath.Join(m.dir, f.Name(), f.Name()),
+					name: strings.TrimPrefix(f.Name(), Prefix),
+				},
 			})
 		}
 	}
@@ -143,11 +149,24 @@ func (m *Manager) Upgrade(ctx context.Context, ext Extension) error {
 		}
 
 		if !m.dryRun {
+			// stage the new version in a temp dir (inside m.dir so the
+			// final rename stays on the same filesystem) and only remove
+			// the old version once the new one is fully downloaded,
+			// otherwise a failed download leaves the user with nothing
+			tmp, err := os.MkdirTemp(m.dir, ".upgrade-*")
+			if err != nil {
+				return errors.Wrap(err, "create temp dir")
+			}
+			defer func() { _ = os.RemoveAll(tmp) }()
+
+			if err = m.installGitHubTo(ctx, mf.Owner, mf.Repo, false, tmp); err != nil {
+				return errors.Wrapf(err, "install GitHub extension %q", e.Name())
+			}
 			if err = m.Remove(ext); err != nil {
 				return errors.Wrapf(err, "remove old version extension")
 			}
-			if err = m.installGitHub(ctx, mf.Owner, mf.Repo, false); err != nil {
-				return errors.Wrapf(err, "install GitHub extension %q", e.Name())
+			if err = os.Rename(filepath.Join(tmp, mf.Repo), filepath.Join(m.dir, mf.Repo)); err != nil {
+				return errors.Wrap(err, "move new version into place")
 			}
 		}
 
@@ -209,14 +228,18 @@ func (m *Manager) installLocal(path string, force bool) error {
 	return nil
 }
 
-func (m *Manager) installGitHub(ctx context.Context, owner, repo string, force bool) (rerr error) {
+func (m *Manager) installGitHub(ctx context.Context, owner, repo string, force bool) error {
+	return m.installGitHubTo(ctx, owner, repo, force, m.dir)
+}
+
+func (m *Manager) installGitHubTo(ctx context.Context, owner, repo string, force bool, baseDir string) error {
 	if !strings.HasPrefix(repo, Prefix) {
 		return errors.Errorf("invalid repo name: %q, should start with %q", repo, Prefix)
 	}
 
 	platform, ext := platformBinaryName()
 
-	targetDir := filepath.Join(m.dir, repo)
+	targetDir := filepath.Join(baseDir, repo)
 	binPath := filepath.Join(targetDir, repo) + ext
 	if err := m.maybeExist(binPath, force); err != nil {
 		return err
@@ -294,7 +317,13 @@ func (m *Manager) maybeExist(binPath string, force bool) error {
 
 // Remove removes an extension by name(without prefix).
 func (m *Manager) Remove(ext Extension) error {
-	target := Prefix + ext.Name()
+	// derive the install dir from the extension's actual location;
+	// deriving it from Name() breaks for names containing dots
+	// (e.g. repo "tdl-foo.v2" -> Name() "foo" -> dir "tdl-foo" not found)
+	target := filepath.Base(filepath.Dir(ext.Path()))
+	if !strings.HasPrefix(target, Prefix) {
+		return errors.Errorf("invalid extension directory: %s", target)
+	}
 	targetDir := filepath.Join(m.dir, target)
 	if _, err := os.Lstat(targetDir); os.IsNotExist(err) {
 		return errors.Errorf("no extension found: %s", targetDir)

@@ -3,12 +3,12 @@ package extension
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
 	"github.com/go-faster/errors"
 	"github.com/jedib0t/go-pretty/v6/table"
+	"go.uber.org/multierr"
 
 	"github.com/iyear/tdl/pkg/extensions"
 )
@@ -47,11 +47,16 @@ func List(ctx context.Context, em *extensions.Manager) error {
 }
 
 func Install(ctx context.Context, em *extensions.Manager, targets []string, force bool) error {
+	// keep processing the remaining targets on failure, but report a
+	// non-nil error at the end so scripts see a non-zero exit code
+	var merr error
+
 	for _, target := range targets {
 		info(0, "installing extension %s...", normalizeExtName(target))
 
 		if err := em.Install(ctx, target, force); err != nil {
 			fail(1, "install extension %s failed: %s", normalizeExtName(target), err)
+			merr = multierr.Append(merr, errors.Wrapf(err, "install %s", target))
 			continue
 		}
 
@@ -62,7 +67,7 @@ func Install(ctx context.Context, em *extensions.Manager, targets []string, forc
 		}
 	}
 
-	return nil
+	return merr
 }
 
 func Upgrade(ctx context.Context, em *extensions.Manager, targets []string) error {
@@ -84,10 +89,13 @@ func Upgrade(ctx context.Context, em *extensions.Manager, targets []string) erro
 		}
 	}
 
+	var merr error
+
 	for _, target := range targets {
 		e, ok := extMap[strings.TrimPrefix(target, extensions.Prefix)]
 		if !ok {
 			fail(0, "extension %s not found", normalizeExtName(target))
+			merr = multierr.Append(merr, errors.Errorf("extension %s not found", target))
 			continue
 		}
 
@@ -99,8 +107,10 @@ func Upgrade(ctx context.Context, em *extensions.Manager, targets []string) erro
 				succ(1, "extension %s already up-to-date", normalizeExtName(e.Name()))
 			case errors.Is(err, extensions.ErrOnlyGitHub):
 				fail(1, "extension %s can't be automatically upgraded by tdl", normalizeExtName(e.Name()))
+				merr = multierr.Append(merr, errors.Wrapf(err, "upgrade %s", e.Name()))
 			default:
 				fail(1, "upgrade extension %s failed: %s", normalizeExtName(e.Name()), err)
+				merr = multierr.Append(merr, errors.Wrapf(err, "upgrade %s", e.Name()))
 			}
 
 			continue
@@ -113,7 +123,7 @@ func Upgrade(ctx context.Context, em *extensions.Manager, targets []string) erro
 		}
 	}
 
-	return nil
+	return merr
 }
 
 func Remove(ctx context.Context, em *extensions.Manager, targets []string) error {
@@ -127,15 +137,19 @@ func Remove(ctx context.Context, em *extensions.Manager, targets []string) error
 		extMap[e.Name()] = e
 	}
 
+	var merr error
+
 	for _, target := range targets {
 		e, ok := extMap[strings.TrimPrefix(target, extensions.Prefix)]
 		if !ok {
 			fail(0, "extension %s not found", normalizeExtName(target))
+			merr = multierr.Append(merr, errors.Errorf("extension %s not found", target))
 			continue
 		}
 
 		if err = em.Remove(e); err != nil {
 			fail(0, "remove extension %s failed: %s", normalizeExtName(e.Name()), err)
+			merr = multierr.Append(merr, errors.Wrapf(err, "remove %s", e.Name()))
 			continue
 		}
 
@@ -146,7 +160,7 @@ func Remove(ctx context.Context, em *extensions.Manager, targets []string) error
 		}
 	}
 
-	return nil
+	return merr
 }
 
 func normalizeExtName(n string) string {
@@ -156,6 +170,7 @@ func normalizeExtName(n string) string {
 	if !strings.HasPrefix(n, extensions.Prefix) {
 		n = extensions.Prefix + n
 	}
-	n = strings.TrimSuffix(n, filepath.Ext(n))
+	// do not strip a trailing extension: legitimate names can contain
+	// dots (e.g. "tdl-foo.v2"), stripping would display the wrong name
 	return color.New(color.Bold, color.FgCyan).Sprint(n)
 }

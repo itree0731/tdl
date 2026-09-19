@@ -26,9 +26,17 @@ type Extension interface {
 
 type baseExtension struct {
 	path string
+	// name derived from the install dir. Dir names can contain dots
+	// (e.g. repo "tdl-foo.v2"); deriving from the binary path would
+	// strip ".v2" as if it were a file extension and corrupt the name.
+	// Empty means derive from path (kept for direct constructions).
+	name string
 }
 
 func (e baseExtension) Name() string {
+	if e.name != "" {
+		return e.name
+	}
 	s := strings.TrimPrefix(filepath.Base(e.path), Prefix)
 	s = strings.TrimSuffix(s, filepath.Ext(s))
 	return s
