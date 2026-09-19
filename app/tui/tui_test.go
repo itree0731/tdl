@@ -111,9 +111,14 @@ func TestQuoteJoin(t *testing.T) {
 }
 
 func TestModelFlow(t *testing.T) {
-	var gotArgv []string
+	// exec runs on a goroutine started by startRun: the argv must cross
+	// goroutines through a channel, not a shared variable
+	argvCh := make(chan []string, 1)
 	exec := func(ctx context.Context, argv []string, out io.Writer) error {
-		gotArgv = argv
+		select {
+		case argvCh <- argv:
+		default:
+		}
 		fmt.Fprintln(out, "hello from stub")
 		fmt.Fprint(out, "10%\r50%\r99%\r")
 		return nil
@@ -142,12 +147,14 @@ func TestModelFlow(t *testing.T) {
 	if m.state() != stateRun || !m.running {
 		t.Fatalf("after run state = %v running = %v", m.state(), m.running)
 	}
-	// exec runs in a goroutine: wait for it to observe the argv
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(gotArgv) == 0 {
-		time.Sleep(10 * time.Millisecond)
+	// exec runs in a goroutine: wait for it to hand over the argv
+	var gotArgv []string
+	select {
+	case gotArgv = <-argvCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("exec was not invoked within 2s")
 	}
-	if len(gotArgv) == 0 || gotArgv[0] != "dl" {
+	if gotArgv[0] != "dl" {
 		t.Fatalf("exec argv = %v", gotArgv)
 	}
 	if !containsStr(gotArgv, "https://t.me/a/1") {
