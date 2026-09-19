@@ -32,11 +32,18 @@ func GetPhotoInfo(photo *tg.MessageMediaPhoto) (*Media, bool) {
 }
 
 func GetPhotoSize(sizes []tg.PhotoSizeClass) (string, int, bool) {
+	if len(sizes) == 0 {
+		return "", 0, false
+	}
+
 	size := sizes[len(sizes)-1]
 	switch s := size.(type) {
 	case *tg.PhotoSize:
 		return s.Type, s.Size, true
 	case *tg.PhotoSizeProgressive:
+		if len(s.Sizes) == 0 {
+			return "", 0, false
+		}
 		return s.Type, s.Sizes[len(s.Sizes)-1], true
 	}
 

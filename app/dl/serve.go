@@ -120,7 +120,9 @@ func serve(ctx context.Context,
 	}))
 
 	s := http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
+		// bind loopback only: this server streams media from the logged-in
+		// Telegram session, it must not be reachable from the network
+		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
 		Handler: router,
 	}
 

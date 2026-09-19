@@ -61,7 +61,8 @@ func (s *State) SetState(ctx context.Context, userID int64, state updates.State)
 func (s *State) SetPts(ctx context.Context, userID int64, pts int) error {
 	state, k := updates.State{}, s.stateKey(userID)
 
-	if err := s.Get(ctx, k, &state); err != nil {
+	// ErrNotFound means the state is written for the first time
+	if err := s.Get(ctx, k, &state); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	state.Pts = pts
@@ -71,7 +72,7 @@ func (s *State) SetPts(ctx context.Context, userID int64, pts int) error {
 func (s *State) SetQts(ctx context.Context, userID int64, qts int) error {
 	state, k := updates.State{}, s.stateKey(userID)
 
-	if err := s.Get(ctx, k, &state); err != nil {
+	if err := s.Get(ctx, k, &state); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	state.Qts = qts
@@ -81,7 +82,7 @@ func (s *State) SetQts(ctx context.Context, userID int64, qts int) error {
 func (s *State) SetDate(ctx context.Context, userID int64, date int) error {
 	state, k := updates.State{}, s.stateKey(userID)
 
-	if err := s.Get(ctx, k, &state); err != nil {
+	if err := s.Get(ctx, k, &state); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	state.Date = date
@@ -91,7 +92,7 @@ func (s *State) SetDate(ctx context.Context, userID int64, date int) error {
 func (s *State) SetSeq(ctx context.Context, userID int64, seq int) error {
 	state, k := updates.State{}, s.stateKey(userID)
 
-	if err := s.Get(ctx, k, &state); err != nil {
+	if err := s.Get(ctx, k, &state); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	state.Seq = seq
@@ -101,7 +102,7 @@ func (s *State) SetSeq(ctx context.Context, userID int64, seq int) error {
 func (s *State) SetDateSeq(ctx context.Context, userID int64, date, seq int) error {
 	state, k := updates.State{}, s.stateKey(userID)
 
-	if err := s.Get(ctx, k, &state); err != nil {
+	if err := s.Get(ctx, k, &state); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	state.Date = date
@@ -130,7 +131,7 @@ func (s *State) GetChannelPts(ctx context.Context, userID, channelID int64) (int
 func (s *State) SetChannelPts(ctx context.Context, userID, channelID int64, pts int) error {
 	c, k := make(map[int64]int), s.channelKey(userID)
 
-	if err := s.Get(ctx, k, &c); err != nil {
+	if err := s.Get(ctx, k, &c); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	c[channelID] = pts
@@ -140,7 +141,7 @@ func (s *State) SetChannelPts(ctx context.Context, userID, channelID int64, pts 
 func (s *State) ForEachChannels(ctx context.Context, userID int64, f func(ctx context.Context, channelID int64, pts int) error) error {
 	c := make(map[int64]int)
 
-	if err := s.Get(ctx, s.channelKey(userID), &c); err != nil {
+	if err := s.Get(ctx, s.channelKey(userID), &c); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
 

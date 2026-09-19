@@ -16,14 +16,17 @@ import (
 )
 
 type recovery struct {
-	ctx     context.Context
-	backoff backoff.BackOff
+	ctx        context.Context
+	newBackoff func() backoff.BackOff
 }
 
-func New(ctx context.Context, backoff backoff.BackOff) telegram.Middleware {
+// New creates a recovery middleware. newBackoff is called once per invoke:
+// a single shared backoff.BackOff would be mutated concurrently by parallel
+// RPCs (it is not thread-safe), racing and cross-polluting retry state.
+func New(ctx context.Context, newBackoff func() backoff.BackOff) telegram.Middleware {
 	return &recovery{
-		ctx:     ctx,
-		backoff: backoff,
+		ctx:        ctx,
+		newBackoff: newBackoff,
 	}
 }
 
@@ -41,7 +44,7 @@ func (r *recovery) Handle(next tg.Invoker) telegram.InvokeFunc {
 			}
 
 			return nil
-		}, r.backoff, func(err error, duration time.Duration) {
+		}, r.newBackoff(), func(err error, duration time.Duration) {
 			log.Debug("Wait for connection recovery", zap.Error(err), zap.Duration("duration", duration))
 		})
 	}

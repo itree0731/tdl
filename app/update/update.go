@@ -59,9 +59,15 @@ func Run(ctx context.Context, opts Options) (rerr error) {
 		return nil
 	}
 
-	dialer, err := netutil.NewProxy(viper.GetString(consts.FlagProxy))
-	if err != nil {
-		dialer = proxy.Direct
+	var dialer proxy.ContextDialer = proxy.Direct
+	if p := viper.GetString(consts.FlagProxy); p != "" {
+		var err error
+		dialer, err = netutil.NewProxy(p)
+		if err != nil {
+			// a malformed --proxy must not silently fall back to a
+			// direct connection
+			return errors.Wrap(err, "invalid proxy")
+		}
 	}
 
 	release, err := fetchRelease(ctx, opts.Target, dialer)

@@ -102,9 +102,13 @@ func New() *cobra.Command {
 			// extension manager client proxy
 			var dialer proxy.ContextDialer = proxy.Direct
 			if p := viper.GetString(consts.FlagProxy); p != "" {
-				if t, err := netutil.NewProxy(p); err == nil {
-					dialer = t
+				t, err := netutil.NewProxy(p)
+				if err != nil {
+					// a malformed --proxy must not silently fall back to a
+					// direct connection
+					return errors.Wrap(err, "invalid proxy")
 				}
+				dialer = t
 			}
 			em.SetClient(&http.Client{Transport: &http.Transport{
 				DialContext: dialer.DialContext,

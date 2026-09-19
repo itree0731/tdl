@@ -81,6 +81,13 @@ func (p *progress) OnDone(elem downloader.Elem, err error) {
 		p.fail(t, elem, errors.Wrap(err, "post file"))
 		return
 	}
+
+	// small files may finish too fast for the progress renderer to draw
+	// their tracker, so give it a moment (relocated from the core write
+	// path, which delayed every file's last part)
+	if e.file.Size < downloader.MaxPartSize {
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func (p *progress) donePost(elem *iterElem) error {

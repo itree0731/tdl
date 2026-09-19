@@ -42,20 +42,25 @@ func (d *Downloader) Download(ctx context.Context, limit int) error {
 
 		wg.Go(func() (rerr error) {
 			d.opts.Progress.OnAdd(elem)
-			defer func() { d.opts.Progress.OnDone(elem, rerr) }()
 
-			if err := d.download(wgctx, elem); err != nil {
+			var derr error
+			defer func() { d.opts.Progress.OnDone(elem, derr) }()
+
+			derr = d.download(wgctx, elem)
+			if derr != nil {
 				// canceled by user, so we directly return error to stop all
-				if errors.Is(err, context.Canceled) {
-					return errors.Wrap(err, "download")
+				if errors.Is(derr, context.Canceled) {
+					return errors.Wrap(derr, "download")
 				}
 
-				// don't return error, just log it
+				// don't fail the whole group, just log it,
+				// but the error must reach OnDone so progress
+				// doesn't finalize a partial file as complete
 				logctx.
 					From(ctx).
 					Error("Download error",
 						zap.Any("element", elem),
-						zap.Error(err),
+						zap.Error(derr),
 					)
 			}
 
@@ -64,6 +69,7 @@ func (d *Downloader) Download(ctx context.Context, limit int) error {
 	}
 
 	if err := d.opts.Iter.Err(); err != nil {
+		wg.Wait() // let in-flight goroutines settle before the caller tears down connections
 		return errors.Wrap(err, "iter")
 	}
 
@@ -88,7 +94,7 @@ func (d *Downloader) download(ctx context.Context, elem Elem) error {
 	_, err := downloader.NewDownloader().WithPartSize(MaxPartSize).
 		Download(client, elem.File().Location()).
 		WithThreads(tutil.BestThreads(elem.File().Size(), d.opts.Threads)).
-		Parallel(ctx, newWriteAt(elem, d.opts.Progress, MaxPartSize))
+		Parallel(ctx, newWriteAt(elem, d.opts.Progress))
 	if err != nil {
 		return errors.Wrap(err, "download")
 	}

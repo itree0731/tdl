@@ -103,7 +103,16 @@ func (p *pool) Close() (err error) {
 		err = takeout.UnTakeout(context.TODO(), p.Takeout(context.TODO(), p.current()).Invoker())
 	}
 
+	// copy close funcs under lock; calling them inside the lock risks
+	// deadlock with concurrent Client()/Takeout() callers
+	p.mu.Lock()
+	closes := make([]func() error, 0, len(p.closes))
 	for _, c := range p.closes {
+		closes = append(closes, c)
+	}
+	p.mu.Unlock()
+
+	for _, c := range closes {
 		err = multierr.Append(err, c())
 	}
 
@@ -119,8 +128,10 @@ func (p *pool) Takeout(ctx context.Context, dc int) *tg.Client {
 		sid, err := takeout.Takeout(ctx, p.api)
 		if err != nil {
 			logctx.From(ctx).Warn("takeout error", zap.Error(err))
-			// ignore init delay error and return non-takeout client
-			return p.Client(ctx, dc)
+			// ignore init delay error and return non-takeout client.
+			// p.mu is already held here, so we must call invoker directly
+			// instead of Client() which locks it again
+			return tg.NewClient(p.invoker(ctx, dc))
 		}
 		p.takeout = sid
 		logctx.From(ctx).Info("get takeout id", zap.Int64("id", sid))

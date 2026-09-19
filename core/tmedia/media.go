@@ -52,10 +52,22 @@ func GetDocumentThumb(doc *tg.Document) (*Media, bool) {
 		return nil, false
 	}
 
-	photoSize := &tg.PhotoSize{}
+	// var + nil check instead of &tg.PhotoSize{} so that thumbs without
+	// a concrete size (e.g. only *tg.PhotoStrippedSize) return false
+	// instead of a zero-size thumb that breaks media cloning
+	var photoSize *tg.PhotoSize
 	for _, t := range thumbs {
-		if p, ok := t.(*tg.PhotoSize); ok {
+		switch p := t.(type) {
+		case *tg.PhotoSize:
 			photoSize = p
+		case *tg.PhotoSizeProgressive:
+			if len(p.Sizes) == 0 {
+				continue
+			}
+			// use the largest progressive size
+			photoSize = &tg.PhotoSize{Type: p.Type, Size: p.Sizes[len(p.Sizes)-1]}
+		}
+		if photoSize != nil {
 			break
 		}
 	}

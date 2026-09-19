@@ -13,8 +13,10 @@ import (
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/samber/lo"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/iyear/tdl/core/logctx"
 	"github.com/iyear/tdl/core/util/fsutil"
 	"github.com/iyear/tdl/core/util/mediautil"
 )
@@ -46,15 +48,24 @@ func (u *Uploader) Upload(ctx context.Context, limit int) error {
 
 		wg.Go(func() (rerr error) {
 			u.opts.Progress.OnAdd(elem)
-			defer func() { u.opts.Progress.OnDone(elem, rerr) }()
 
-			if err := u.upload(wgctx, elem); err != nil {
+			var uerr error
+			defer func() { u.opts.Progress.OnDone(elem, uerr) }()
+
+			uerr = u.upload(wgctx, elem)
+			if uerr != nil {
 				// canceled by user, so we directly return error to stop all
-				if errors.Is(err, context.Canceled) {
-					return errors.Wrap(err, "upload")
+				if errors.Is(uerr, context.Canceled) {
+					return errors.Wrap(uerr, "upload")
 				}
 
-				// don't return error, just log it
+				// don't fail the whole group, just log it,
+				// but the error must reach OnDone so progress
+				// can skip post actions (e.g. --remove source deletion)
+				logctx.From(ctx).Error("Upload error",
+					zap.Any("element", elem),
+					zap.Error(uerr),
+				)
 			}
 
 			return nil
@@ -62,6 +73,7 @@ func (u *Uploader) Upload(ctx context.Context, limit int) error {
 	}
 
 	if err := u.opts.Iter.Err(); err != nil {
+		wg.Wait() // let in-flight goroutines settle before the caller tears down connections
 		return errors.Wrap(err, "iter")
 	}
 
