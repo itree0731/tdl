@@ -63,6 +63,11 @@ type iter struct {
 	dialogIndex  int // physical position: current dialog in dialogs array
 	messageIndex int // physical position: current message in dialog.Messages array
 
+	// messages already queued with their album (grouped) message. Keyed by
+	// dialog peer ID -> message ID. Without it, every member of an album
+	// re-triggers fetching and re-queuing the whole album (N x downloads).
+	groupedSeen map[int64]map[int]struct{}
+
 	// TODO(Hexa): counter is de facto not be used in the codebase, but I perfer to reserve it. The key point is whether it still needs to be atomic or not.
 	counter        *atomic.Int64
 	skippedDeleted *atomic.Int64 // count of skipped deleted messages
@@ -112,6 +117,7 @@ func newIter(pool dcpool.Pool, manager *peers.Manager, dialog [][]*tmessage.Dial
 		logicalPos:     0,
 		dialogIndex:    0,
 		messageIndex:   0,
+		groupedSeen:    make(map[int64]map[int]struct{}),
 		counter:        atomic.NewInt64(-1),
 		skippedDeleted: atomic.NewInt64(0),
 		deletedIDs:     make([]string, 0),
@@ -152,8 +158,16 @@ func (i *iter) process(ctx context.Context) (ret bool, skip bool) {
 	defer i.mu.Unlock()
 
 	// end of iteration or error occurred
-	if i.dialogIndex >= len(i.dialogs) || i.messageIndex >= len(i.dialogs[i.dialogIndex].Messages) || i.err != nil {
+	if i.dialogIndex >= len(i.dialogs) || i.err != nil {
 		return false, false
+	}
+
+	// a dialog with no messages is exhausted, not the end of iteration:
+	// advance to the next dialog or every following one would be skipped
+	if i.messageIndex >= len(i.dialogs[i.dialogIndex].Messages) {
+		i.dialogIndex++
+		i.messageIndex = 0
+		return false, true
 	}
 
 	peer, msg := i.dialogs[i.dialogIndex].Peer, i.dialogs[i.dialogIndex].Messages[i.messageIndex]
@@ -168,6 +182,13 @@ func (i *iter) process(ctx context.Context) (ret bool, skip bool) {
 			i.messageIndex = 0
 		}
 	}()
+
+	// this message was already queued together with its album when an
+	// earlier member triggered processGrouped; the group block already
+	// advanced logicalPos for all its members, so just skip
+	if _, ok := i.groupedSeen[tutil.GetInputPeerID(peer)][msg]; ok {
+		return false, true
+	}
 
 	from, err := i.manager.FromInputPeer(ctx, peer)
 	if err != nil {
@@ -286,6 +307,17 @@ func (i *iter) processGrouped(ctx context.Context, message *tg.Message, from pee
 	if err != nil {
 		i.err = errors.Wrapf(err, "resolve grouped message %d/%d", from.ID(), message.ID)
 		return false, false
+	}
+
+	// mark all members as seen so the physical cursor skips them later;
+	// the block below claims logicalPos for the whole group at once
+	seen := i.groupedSeen[from.ID()]
+	if seen == nil {
+		seen = make(map[int]struct{})
+		i.groupedSeen[from.ID()] = seen
+	}
+	for _, m := range grouped {
+		seen[m.ID] = struct{}{}
 	}
 
 	hasValid := false

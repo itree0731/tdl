@@ -72,11 +72,18 @@ func parseFile(ctx context.Context, client *tg.Client, kvd storage.Storage, file
 		zap.Int64("id", peer.ID()),
 		zap.String("name", peer.VisibleName()))
 
-	if _, err = f.Seek(0, io.SeekStart); err != nil {
+	// jstream's Stream() keeps a background goroutine reading from the
+	// first handle even after we break out, so collect() must use its own
+	// handle: two decoders on one *os.File race on the shared file offset
+	f2, err := os.Open(file)
+	if err != nil {
 		return nil, err
 	}
+	defer func(f *os.File) {
+		_ = f.Close()
+	}(f2)
 
-	return collect(ctx, f, peer, onlyMedia)
+	return collect(ctx, f2, peer, onlyMedia)
 }
 
 func collect(ctx context.Context, r io.Reader, peer peers.Peer, onlyMedia bool) (*Dialog, error) {
@@ -114,6 +121,12 @@ func collect(ctx context.Context, r io.Reader, peer peers.Peer, onlyMedia bool) 
 		}
 	}
 
+	// a truncated/corrupt export ends the stream silently; without this
+	// check it would be accepted as a complete result
+	if err := d.Err(); err != nil {
+		return nil, err
+	}
+
 	return m, nil
 }
 
@@ -129,7 +142,9 @@ func getChatInfo(ctx context.Context, client *tg.Client, kvd storage.Storage, r 
 		}
 
 		if _kv.Key == keyID {
-			chatID = int64(_kv.Value.(float64))
+			if v, ok := _kv.Value.(float64); ok {
+				chatID = int64(v)
+			}
 		}
 
 		if chatID != 0 {

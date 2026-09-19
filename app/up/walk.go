@@ -36,7 +36,9 @@ func walk(paths, includes, excludes []string) ([]*File, error) {
 			}
 
 			f := File{File: path}
-			t := strings.TrimRight(path, filepath.Ext(path)) + consts.UploadThumbExt
+			// TrimSuffix, not TrimRight: TrimRight treats the extension as
+			// a char set ("test.txt" -> "tes") and breaks thumb discovery
+			t := strings.TrimSuffix(path, filepath.Ext(path)) + consts.UploadThumbExt
 			if fsutil.PathExists(t) {
 				f.Thumb = t
 			}

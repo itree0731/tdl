@@ -95,6 +95,15 @@ func (i *iter) Next(ctx context.Context) bool {
 		return false
 	}
 
+	// skip dialogs with empty message lists instead of indexing out of range
+	for i.j >= len(i.opts.dialogs[i.i].Messages) {
+		i.i++
+		i.j = 0
+		if i.i >= len(i.opts.dialogs) {
+			return false
+		}
+	}
+
 	// if delay is set, sleep for a while for each iteration
 	if i.opts.delay > 0 && (i.i+i.j) > 0 { // skip first delay
 		time.Sleep(i.opts.delay)
