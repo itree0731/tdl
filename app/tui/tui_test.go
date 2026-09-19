@@ -308,3 +308,52 @@ func TestLoginActionGivesGuidance(t *testing.T) {
 		t.Fatalf("guidance line = %q", last)
 	}
 }
+
+// Header account chips: click one to switch the namespace every command
+// runs under; inert while a command is executing.
+func TestAccountChipSwitch(t *testing.T) {
+	exec := func(ctx context.Context, argv []string, out io.Writer) error { return nil }
+	m := newModel(exec, []string{"default", "work"})
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m2 := asModel(mm)
+
+	if m2.currentNS() != "default" {
+		t.Fatalf("currentNS = %q", m2.currentNS())
+	}
+	chips := m2.nsChipLayout(m2.width)
+	if len(chips) != 2 {
+		t.Fatalf("chips = %+v", chips)
+	}
+	if chips[0].x0 >= chips[0].x1 || chips[1].x0 != chips[0].x1+2 || chips[1].x1 > m2.width {
+		t.Fatalf("chip layout wrong: %+v", chips)
+	}
+
+	// click the second chip: switch, apply to argv, persist
+	x := (chips[1].x0 + chips[1].x1) / 2
+	r, _ := m2.Update(tea.MouseMsg{X: x, Y: 0, Button: tea.MouseButtonLeft})
+	m3 := asModel(r)
+	if m3.currentNS() != "work" {
+		t.Fatalf("after click currentNS = %q", m3.currentNS())
+	}
+	if got := m3.set.globalArgs(); !containsStr(got, "--ns") || !containsStr(got, "work") {
+		t.Fatalf("globalArgs = %v", got)
+	}
+	if s := loadSettings(); s.NS != "work" {
+		t.Fatalf("persisted NS = %q", s.NS)
+	}
+	_ = saveSettings(settings{Language: "en"}) // restore for other tests
+
+	// clicking the chip of an account again keeps it
+	r2, _ := m3.Update(tea.MouseMsg{X: x, Y: 0, Button: tea.MouseButtonLeft})
+	m4 := asModel(r2)
+	if m4.currentNS() != "work" {
+		t.Fatalf("re-click changed NS to %q", m4.currentNS())
+	}
+
+	// while running, chips must not switch accounts mid-run
+	m4.running = true
+	r3, _ := m4.Update(tea.MouseMsg{X: chips[0].x0, Y: 0, Button: tea.MouseButtonLeft})
+	if asModel(r3).currentNS() != "work" {
+		t.Fatal("switched namespace while running")
+	}
+}

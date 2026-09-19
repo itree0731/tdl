@@ -176,8 +176,8 @@ func TestLogoRendersAndDegrades(t *testing.T) {
 func TestNamespacesChip(t *testing.T) {
 	m := sized(t, newModel(stubExec, []string{"default", "work"}), 90, 24)
 	out := renderPlain(m)
-	if !strings.Contains(out, "● default, work") {
-		t.Errorf("namespace chip missing:\n%s", out)
+	if !strings.Contains(out, "● default  ○ work") {
+		t.Errorf("namespace chips missing:\n%s", out)
 	}
 	// login desc gains a check hint
 	if !strings.Contains(out, "✓ default, work") {

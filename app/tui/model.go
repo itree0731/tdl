@@ -216,6 +216,14 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.MouseButtonLeft:
+		// account chips on the header row: click to switch namespace
+		if !m.running && int(msg.Y) == 0 {
+			for _, c := range m.nsChipLayout(m.width) {
+				if x := int(msg.X); x >= c.x0 && x < c.x1 {
+					return m.switchNS(c.ns)
+				}
+			}
+		}
 		switch m.state() {
 		case stateRun:
 			if m.running {
@@ -428,6 +436,18 @@ func (m model) stopRun() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// switchNS makes ns the account every subsequent command runs under and
+// persists it: tdl sessions live per namespace, so switching to another
+// logged-in account needs no separate login.
+func (m model) switchNS(ns string) (tea.Model, tea.Cmd) {
+	if ns == m.currentNS() {
+		return m, nil
+	}
+	m.set.NS = ns
+	_ = saveSettings(m.set)
+	return m, nil
+}
+
 func (m *model) toMenu() {
 	m.form = nil
 	m.isSetting = false
@@ -490,12 +510,21 @@ func (m model) View() string {
 
 	var b []string
 
-	// header
-	nsChip := stHint.Render("○ " + m.lang.t("hdr.nosession"))
-	if len(m.namespaces) > 0 {
-		nsChip = stOK.Render("● " + strings.Join(m.namespaces, ", "))
+	// header: one clickable chip per logged-in account
+	prefix := stBrand.Render("tdl") + "  " + stBanner.Render(m.lang.t("banner.title")) + "  "
+	if chips := m.nsChipLayout(m.width); len(chips) > 0 {
+		parts := []string{prefix}
+		for _, c := range chips {
+			if c.ns == m.currentNS() {
+				parts = append(parts, stOK.Render("● "+c.ns))
+			} else {
+				parts = append(parts, stHint.Render("○ "+c.ns))
+			}
+		}
+		b = append(b, strings.Join(parts, "  "))
+	} else {
+		b = append(b, prefix+stHint.Render("○ "+m.lang.t("hdr.nosession")))
 	}
-	b = append(b, stBrand.Render("tdl")+"  "+stBanner.Render(m.lang.t("banner.title"))+"  "+nsChip)
 
 	// main area
 	switch m.state() {
@@ -552,6 +581,46 @@ func (m model) menuWindow() (firstY, firstIx, count int) {
 		firstIx = max
 	}
 	return firstY, firstIx, avail
+}
+
+// nsChip is one clickable account chip on the header row.
+type nsChip struct {
+	ns     string
+	x0, x1 int // half-open [x0, x1) in terminal columns
+}
+
+// currentNS is the namespace every executed command runs under.
+func (m model) currentNS() string {
+	if m.set.NS == "" {
+		return "default"
+	}
+	return m.set.NS
+}
+
+// nsChipLayout computes where each account chip sits on the header line,
+// dropping chips that do not fit. Pure function of the model so View and
+// mouse hit-testing always agree.
+func (m model) nsChipLayout(width int) []nsChip {
+	if len(m.namespaces) == 0 {
+		return nil
+	}
+	x := lipgloss.Width(stBrand.Render("tdl")) + 2 +
+		lipgloss.Width(stBanner.Render(m.lang.t("banner.title"))) + 2
+	cur := m.currentNS()
+	var out []nsChip
+	for _, ns := range m.namespaces {
+		label := "○ " + ns
+		if ns == cur {
+			label = "● " + ns
+		}
+		w := lipgloss.Width(stHint.Render(label))
+		if x+w > width {
+			break
+		}
+		out = append(out, nsChip{ns: ns, x0: x, x1: x + w})
+		x += w + 2
+	}
+	return out
 }
 
 func (m model) viewMenu() string {
