@@ -53,9 +53,10 @@ Write-Host "Target version: $Version" -ForegroundColor Blue
 
 # build download URL
 $URL = "${PROXY_PREFIX}https://github.com/$Owner/$Repo/releases/download/$Version/${Repo}_Windows_$Arch.zip"
+$ChecksumURL = "${PROXY_PREFIX}https://github.com/$Owner/$Repo/releases/download/$Version/${Repo}_checksums.txt"
 Write-Host "Downloading $Repo from $URL" -ForegroundColor Blue
 
-# download and extract
+# download archive and checksums
 Invoke-WebRequest -Uri $URL -OutFile "$Repo.zip"
 # test zip path
 if (-not(Test-Path "$Repo.zip"))
@@ -63,6 +64,25 @@ if (-not(Test-Path "$Repo.zip"))
     Write-Host "Download $URL failed" -ForegroundColor Red
     exit 1
 }
+Invoke-WebRequest -Uri $ChecksumURL -OutFile "$Repo-checksums.txt"
+
+# verify sha256 checksum before extracting
+$ArchiveName = "${Repo}_Windows_$Arch.zip"
+$Expected = (Select-String -Path "$Repo-checksums.txt" -Pattern ("(^|\s)" + [regex]::Escape($ArchiveName) + "\s*$") |
+    Select-Object -First 1).Line -split '\s+' | Select-Object -First 1
+if (-not $Expected)
+{
+    Write-Host "Checksum for $ArchiveName not found in checksums file" -ForegroundColor Red
+    exit 1
+}
+$Actual = (Get-FileHash -Path "$Repo.zip" -Algorithm SHA256).Hash.ToLower()
+if ($Actual -ne $Expected.ToLower())
+{
+    Write-Host "Checksum mismatch: expected $Expected, got $Actual" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Checksum verified" -ForegroundColor Green
+
 # only extract tdl.exe to $LOCATION , add to PATH and remove zip file
 Expand-Archive -Path "$Repo.zip" -DestinationPath "$Location" -Force
 
@@ -79,8 +99,9 @@ if (-not($PathEnv -like "*$Location*"))
 
     Write-Host "Note: Updates to PATH might not be visible until you restart your terminal application or reboot machine" -ForegroundColor Yellow
 }
-# remove zip file
+# remove zip and checksums file
 Remove-Item "$Repo.zip"
+Remove-Item "$Repo-checksums.txt" -ErrorAction SilentlyContinue
 
 # test if installation is successful, and print instructions
 if (-not(Get-Command $Repo -ErrorAction SilentlyContinue))
