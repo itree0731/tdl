@@ -24,8 +24,10 @@ type model struct {
 	program *tea.Program
 	exec    Executor
 
-	lang Lang
-	set  settings
+	lang       Lang
+	set        settings
+	namespaces []string // logged-in namespaces, for the header chip
+	hasSession bool     // true once any namespace was seen at startup
 
 	actions []action
 	menuIx  int
@@ -51,13 +53,9 @@ type model struct {
 	scrollback []string
 
 	width, height int
-
-	// mouse hit boxes, recomputed every View
-	menuY   int // screen Y of first menu row
-	stopBox [4]int
 }
 
-func newModel(exec Executor) model {
+func newModel(exec Executor, namespaces []string) model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = stSpinner
@@ -65,20 +63,23 @@ func newModel(exec Executor) model {
 	set := loadSettings()
 
 	m := model{
-		exec:    exec,
-		lang:    Lang(set.Language),
-		set:     set,
-		actions: newActions(),
-		spinner: sp,
-		vp:      viewport.New(0, 0),
-		follow:  true,
+		exec:       exec,
+		lang:       Lang(set.Language),
+		set:        set,
+		namespaces: namespaces,
+		hasSession: len(namespaces) > 0,
+		actions:    newActions(),
+		spinner:    sp,
+		vp:         viewport.New(0, 0),
+		follow:     true,
 	}
 	return m
 }
 
-// Run starts the TUI program. exec is injected from package cmd.
-func Run(exec Executor) error {
-	m := newModel(exec)
+// Run starts the TUI program. exec is injected from package cmd;
+// namespaces are the logged-in namespaces shown in the header.
+func Run(exec Executor, namespaces []string) error {
+	m := newModel(exec, namespaces)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	m.program = p
 	_, err := p.Run()
@@ -214,15 +215,21 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.MouseButtonLeft:
-		if m.state() == stateRun && m.running {
-			x, y := int(msg.X), int(msg.Y)
-			if x >= m.stopBox[0] && x <= m.stopBox[2] && y >= m.stopBox[1] && y <= m.stopBox[3] {
-				return m.stopRun()
+		switch m.state() {
+		case stateRun:
+			if m.running {
+				// the status line sits 5 rows above the bottom edge and
+				// [stop] is its last 6 cells; computed, never stored, so
+				// the hit box cannot drift from what View rendered
+				x, y := int(msg.X), int(msg.Y)
+				if y == m.height-5 && x >= m.width-7 {
+					return m.stopRun()
+				}
 			}
-		}
-		if m.state() == stateMenu {
-			ix := int(msg.Y) - m.menuY
-			if ix >= 0 && ix < len(m.actions) {
+		case stateMenu:
+			firstY, firstIx, count := m.menuWindow()
+			ix := int(msg.Y) - firstY + firstIx
+			if ix >= firstIx && ix < firstIx+count {
 				if ix == m.menuIx {
 					return m.openMenuItem(ix)
 				}
@@ -269,6 +276,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			m.focusFormField(m.formIx - 1)
 		case " ":
+			// space is the only toggle key; enter is reserved for run/save
 			if f.kind == kBool {
 				f.boolVal = !f.boolVal
 			} else if f.kind == kChoice {
@@ -287,14 +295,6 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		case "enter":
-			if f.kind == kBool {
-				f.boolVal = !f.boolVal
-				return m, nil
-			}
-			if f.kind == kChoice {
-				f.cycle(true)
-				return m, nil
-			}
 			return m.launchForm()
 		case "esc":
 			m.form = nil
@@ -481,7 +481,11 @@ func (m model) View() string {
 	var b []string
 
 	// header
-	b = append(b, stBrand.Render("tdl")+"  "+stBanner.Render(m.lang.t("banner.title")))
+	nsChip := stHint.Render("○ " + m.lang.t("hdr.nosession"))
+	if len(m.namespaces) > 0 {
+		nsChip = stOK.Render("● " + strings.Join(m.namespaces, ", "))
+	}
+	b = append(b, stBrand.Render("tdl")+"  "+stBanner.Render(m.lang.t("banner.title"))+"  "+nsChip)
 
 	// main area
 	switch m.state() {
@@ -505,27 +509,68 @@ func (m model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, b...)
 }
 
+// menuShowsLogo reports whether the ASCII logo fits above the menu.
+func (m model) menuShowsLogo() bool {
+	return m.mainHeight() >= len(asciiLogo)+2+len(m.actions)+1
+}
+
+// menuWindow computes where the menu items live on screen: the Y of the
+// first visible row, the index of the first visible item, and how many
+// items are visible. It is a pure function of the model, so View and
+// mouse hit-testing always agree.
+func (m model) menuWindow() (firstY, firstIx, count int) {
+	firstY = 1 // header
+	if m.menuShowsLogo() {
+		firstY += len(asciiLogo) + 1 // logo + blank
+	}
+	firstY += 2 // title + blank
+
+	n := len(m.actions)
+	avail := m.height - 5 - firstY // rows below the menu: status 1 + prompt 3 + shortcuts 1
+	if avail < 1 {
+		avail = 1
+	}
+	if n <= avail {
+		return firstY, 0, n
+	}
+	// window the list around the selection
+	firstIx = m.menuIx - avail/2
+	if firstIx < 0 {
+		firstIx = 0
+	}
+	if max := n - avail; firstIx > max {
+		firstIx = max
+	}
+	return firstY, firstIx, avail
+}
+
 func (m model) viewMenu() string {
-	rows := make([]string, 0, len(m.actions))
-	m.menuY = 2 // header 1 + blank? rendered position of first item
-	for i, a := range m.actions {
-		title := a.title(m.lang)
+	var body []string
+	if m.menuShowsLogo() {
+		for i, l := range asciiLogo {
+			body = append(body, logoStyles[i%len(logoStyles)].Render(l))
+		}
+		body = append(body, "")
+	}
+	body = append(body, stTitle.Render(m.lang.t("menu.title")), "")
+
+	_, firstIx, count := m.menuWindow()
+	for i := firstIx; i < firstIx+count; i++ {
+		a := m.actions[i]
 		desc := a.desc(m.lang)
+		if a.id == "login" && m.hasSession {
+			desc += "  " + stOK.Render("✓ "+strings.Join(m.namespaces, ", "))
+		}
 		var row string
 		if i == m.menuIx {
-			row = stItemSelected.Render("▶ "+title) + stItemDesc.Render(desc)
+			row = stItemSelected.Render("▶ "+a.title(m.lang)) + stItemDesc.Render(desc)
 		} else {
-			row = stItem.Render("  "+title) + stItemDesc.Render(desc)
+			row = stItem.Render("  "+a.title(m.lang)) + stItemDesc.Render(desc)
 		}
-		rows = append(rows, row)
+		body = append(body, row)
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	if m.lang.t("menu.title") != "" {
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			stTitle.Render(m.lang.t("menu.title")), "", body)
-		m.menuY = 3
-	}
-	return lipgloss.NewStyle().Height(m.mainHeight()).Render(body)
+	content := lipgloss.JoinVertical(lipgloss.Left, body...)
+	return lipgloss.NewStyle().Height(m.mainHeight()).Render(content)
 }
 
 func (m model) viewForm() string {
@@ -588,7 +633,6 @@ func (m model) viewStatus() string {
 	}
 	line := m.spinner.View() + " " + stFieldFocus.Render(m.runLabel) + " " +
 		stHint.Render(elapsed.String()) + " " + live + strings.Repeat(" ", pad) + stop
-	m.stopBox = [4]int{m.width - len(stopPlain) - 1, m.height - 5, m.width - 1, m.height - 5}
 	return stStatusBg.Render(line)
 }
 

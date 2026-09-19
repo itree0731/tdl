@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/iyear/tdl/app/tui"
+	"github.com/iyear/tdl/pkg/kv"
 )
 
 // NewTUI creates the `tdl tui` command: a fullscreen, mouse-interactive
@@ -19,9 +20,27 @@ func NewTUI() *cobra.Command {
 		Short:   "Interactive TUI for tdl (grok-build style)",
 		GroupID: groupTools.ID,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return tui.Run(execInTUI)
+			return tui.Run(execInTUI, listNamespaces())
 		},
 	}
+}
+
+// listNamespaces reads logged-in namespaces from the kv storage so the TUI
+// can show which accounts are already available before any login. Read-only
+// and best-effort: the executor opens storage per command run, so this only
+// runs once at startup while storage is free.
+func listNamespaces() []string {
+	stg, err := kv.NewWithMap(DefaultBoltStorage)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = stg.Close() }()
+
+	ns, err := stg.Namespaces()
+	if err != nil {
+		return nil
+	}
+	return ns
 }
 
 // execInTUI runs a fresh tdl command tree in-process.

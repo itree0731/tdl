@@ -61,3 +61,24 @@ var (
 
 	stBanner = lipgloss.NewStyle().Foreground(cDim).Italic(true)
 )
+
+// asciiLogo is "TDL" in figlet ANSI-shadow, shown above the menu when the
+// terminal is tall enough; logoStyles gives it a teal→cyan→blue→magenta
+// gradient, echoing the accent ramp of grok-build's GrokNight theme.
+var asciiLogo = []string{
+	`████████╗ ██████╗ ██╗     `,
+	`╚══██╔══╝██╔═══██╗██║     `,
+	`   ██║   ██║   ██║██║     `,
+	`   ██║   ██║   ██║██║     `,
+	`   ██║   ╚██████╔╝███████╗`,
+	`   ╚═╝    ╚═════╝ ╚══════╝`,
+}
+
+var logoStyles = []lipgloss.Style{
+	lipgloss.NewStyle().Foreground(cTeal),
+	lipgloss.NewStyle().Foreground(cTeal),
+	lipgloss.NewStyle().Foreground(cCyan),
+	lipgloss.NewStyle().Foreground(cBlue),
+	lipgloss.NewStyle().Foreground(cMagenta),
+	lipgloss.NewStyle().Foreground(cMagenta),
+}

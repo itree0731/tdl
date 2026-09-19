@@ -85,8 +85,9 @@ var en = dict{
 	"sc.scroll":    "scroll",
 
 	// misc
-	"banner.title": "tdl — Telegram Downloader, but more than a downloader",
-	"banner.sub":   "TUI mode · grok-build style",
+	"banner.title":  "tdl — Telegram Downloader, but more than a downloader",
+	"banner.sub":    "TUI mode · grok-build style",
+	"hdr.nosession": "no session",
 }
 
 var zh = dict{
@@ -151,8 +152,9 @@ var zh = dict{
 	"sc.quit":      "退出",
 	"sc.scroll":    "滚动",
 
-	"banner.title": "tdl — Telegram 下载器，不止于下载器",
-	"banner.sub":   "TUI 模式 · grok-build 风格",
+	"banner.title":  "tdl — Telegram 下载器，不止于下载器",
+	"banner.sub":    "TUI 模式 · grok-build 风格",
+	"hdr.nosession": "暂无会话",
 }
 
 func (l Lang) t(key string) string {

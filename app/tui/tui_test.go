@@ -119,7 +119,7 @@ func TestModelFlow(t *testing.T) {
 		return nil
 	}
 
-	m := newModel(exec)
+	m := newModel(exec, nil)
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = mm.(model)
 
@@ -187,13 +187,12 @@ func TestModelFlow(t *testing.T) {
 	if !m.isSetting {
 		t.Fatal("settings form not opened")
 	}
-	// language is a choice field: enter cycles to zh, tab moves to the ns
-	// text field, and enter on a text field saves
-	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = mm.(model)
-	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	// language is a choice field: space cycles to zh; enter saves from any
+	// field (enter is reserved for run/save)
+	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
 	m = mm.(model)
 	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // save
+	m = mm.(model)
 	m = mm.(model)
 	if m.lang != LangZh {
 		t.Errorf("lang = %v, want zh", m.lang)
