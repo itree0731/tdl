@@ -81,7 +81,7 @@ func TestAssetNameAgainstRealRelease(t *testing.T) {
 
 func TestBinaryName(t *testing.T) {
 	assert.Equal(t, "tdl.exe", binaryName("windows"))
-	assert.Equal(t, "tdl", binaryName(runtime.GOOS))
+	assert.Equal(t, "tdl", binaryName("linux"))
 	if runtime.GOOS != "windows" {
 		assert.Equal(t, "tdl", binaryName(runtime.GOOS))
 	}
