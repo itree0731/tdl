@@ -46,6 +46,7 @@ type model struct {
 	runLast    time.Duration
 	live       string
 	cancelRun  func()
+	stopReq    bool // ctrl+c pressed once already: next one force quits
 
 	vp     viewport.Model
 	follow bool
@@ -241,9 +242,10 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Ctrl+C: stop a running command, otherwise quit
+	// Ctrl+C: stop a running command first, quit on the next press — an
+	// exec that ignores cancellation must never trap the user in the TUI
 	if msg.Type == tea.KeyCtrlC {
-		if m.running && m.state() == stateRun {
+		if m.running && m.state() == stateRun && !m.stopReq {
 			return m.stopRun()
 		}
 		return m, tea.Quit
@@ -368,6 +370,12 @@ func (m model) openMenuItem(ix int) (tea.Model, tea.Cmd) {
 	case "settings":
 		m.openSettings()
 		return m, nil
+	case "login":
+		// login prompts for phone/code/password on the console, which the
+		// TUI owns: it cannot run in-process. Show guidance instead.
+		m.showOutput = true
+		m.appendLine(stErr.Render(m.lang.t("status.loginext")))
+		return m, nil
 	case "quit":
 		return m, tea.Quit
 	case "version":
@@ -406,12 +414,14 @@ func (m model) launchAction(a *action) (tea.Model, tea.Cmd) {
 	m.runLabel = a.title(m.lang)
 	m.runStart = time.Now()
 	m.live = ""
+	m.stopReq = false
 
 	m.cancelRun = startRun(m.program, m.exec, argv)
 	return m, m.spinner.Tick
 }
 
 func (m model) stopRun() (tea.Model, tea.Cmd) {
+	m.stopReq = true
 	if m.cancelRun != nil {
 		m.cancelRun()
 	}
@@ -619,6 +629,9 @@ func (m model) viewStatus() string {
 	}
 	elapsed := time.Since(m.runStart).Truncate(time.Millisecond)
 	live := m.live
+	if m.stopReq {
+		live = m.lang.t("status.stopping")
+	}
 	// keep the line inside the width
 	budget := m.width - lipgloss.Width(m.runLabel) - 20
 	if budget > 4 && lipgloss.Width(live) > budget {
@@ -676,6 +689,7 @@ func (m model) viewShortcuts() string {
 	case stateForm:
 		return sc("↑↓/tab", m.lang.t("sc.updown"), "space", m.lang.t("sc.space"), "enter", m.lang.t("form.run"), "esc", m.lang.t("form.back"))
 	default:
-		return sc("↑↓", m.lang.t("sc.scroll"), "enter", m.lang.t("form.back"), "ctrl+c", m.lang.t("sc.quit"))
+		return sc("↑↓", m.lang.t("sc.scroll"), "enter", m.lang.t("form.back"),
+			"ctrl+c", m.lang.t("sc.ctrlc"), "ctrl+c ×2", m.lang.t("sc.quit"))
 	}
 }

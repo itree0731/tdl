@@ -223,3 +223,88 @@ func containsStr(ss []string, v string) bool {
 	}
 	return false
 }
+
+func asModel(tm tea.Model) model {
+	switch v := tm.(type) {
+	case model:
+		return v
+	case *model:
+		return *v
+	}
+	panic("unexpected model type")
+}
+
+func indexOfAction(m model, id string) int {
+	for i := range m.actions {
+		if m.actions[i].id == id {
+			return i
+		}
+	}
+	panic("action not found: " + id)
+}
+
+// An exec that ignores cancellation must never trap the user: the first
+// ctrl+c stops the run, the second force quits the program.
+func TestCtrlCForceQuitWhileRunning(t *testing.T) {
+	cancelled := make(chan struct{})
+	exec := func(ctx context.Context, argv []string, out io.Writer) error {
+		<-ctx.Done()
+		close(cancelled)
+		return ctx.Err()
+	}
+
+	m := newModel(exec, nil)
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m2 := asModel(mm)
+
+	ix := indexOfAction(m2, "dl")
+	m2.actions[ix].fields[0].ti.SetValue("https://t.me/a/1")
+	mm2, _ := m2.launchAction(&m2.actions[ix])
+	m3 := asModel(mm2)
+	if !m3.running {
+		t.Fatal("run did not start")
+	}
+
+	r1, cmd1 := m3.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd1 != nil {
+		t.Fatal("first ctrl+c should stop the run, not quit")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first ctrl+c did not cancel the exec context")
+	}
+
+	// running is still true: runDoneMsg for a cancelled exec may never
+	// arrive. The second press must quit regardless.
+	_, cmd2 := r1.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd2 == nil {
+		t.Fatal("second ctrl+c must force quit")
+	}
+}
+
+// login prompts on the console the TUI owns; it must not launch in-process.
+func TestLoginActionGivesGuidance(t *testing.T) {
+	exec := func(ctx context.Context, argv []string, out io.Writer) error {
+		t.Error("login must not be executed in-process")
+		return nil
+	}
+
+	m := newModel(exec, nil)
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m2 := asModel(mm)
+
+	r, _ := m2.openMenuItem(indexOfAction(m2, "login"))
+	m3 := asModel(r)
+
+	if m3.running {
+		t.Fatal("login launched in-process")
+	}
+	if !m3.showOutput {
+		t.Fatal("guidance should show in the output pane")
+	}
+	last := m3.scrollback[len(m3.scrollback)-1]
+	if !strings.Contains(last, "tdl login") {
+		t.Fatalf("guidance line = %q", last)
+	}
+}

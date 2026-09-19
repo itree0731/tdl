@@ -63,6 +63,18 @@ func execInTUI(ctx context.Context, argv []string, out io.Writer) error {
 		os.Stdout, os.Stderr = f, f
 	}
 
+	// No interactive input exists inside the TUI: the console is owned by
+	// the renderer. survey prompts read os.Stdin directly and would block
+	// forever on the raw-mode console, so hand them an EOF-ing handle.
+	if nullIn, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0); err == nil {
+		oldStdin := os.Stdin
+		os.Stdin = nullIn
+		defer func() {
+			os.Stdin = oldStdin
+			_ = nullIn.Close()
+		}()
+	}
+
 	root := New()
 	root.SetArgs(argv)
 	root.SetOut(out)

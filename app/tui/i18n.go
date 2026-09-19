@@ -66,12 +66,14 @@ var en = dict{
 	"set.limit":    "Limit",
 
 	// status
-	"status.running": "Running",
-	"status.done":    "Done in",
-	"status.failed":  "Failed after",
-	"status.stopped": "Stopped after",
-	"status.empty":   "No output",
-	"status.ready":   "Ready. Output will stream here.",
+	"status.running":  "Running",
+	"status.done":     "Done in",
+	"status.failed":   "Failed after",
+	"status.stopped":  "Stopped after",
+	"status.stopping": "stopping… ctrl+c again to force quit",
+	"status.loginext": "'tdl login' needs an interactive terminal: quit the TUI (q) and run it there",
+	"status.empty":    "No output",
+	"status.ready":    "Ready. Output will stream here.",
 
 	// shortcuts
 	"sc.updown":    "navigate",
@@ -135,12 +137,14 @@ var zh = dict{
 	"set.threads":  "线程数",
 	"set.limit":    "并发数",
 
-	"status.running": "运行中",
-	"status.done":    "完成，用时",
-	"status.failed":  "失败，用时",
-	"status.stopped": "已停止，用时",
-	"status.empty":   "无输出",
-	"status.ready":   "就绪。输出将在这里滚动。",
+	"status.running":  "运行中",
+	"status.done":     "完成，用时",
+	"status.failed":   "失败，用时",
+	"status.stopped":  "已停止，用时",
+	"status.stopping": "正在停止…再按一次 ctrl+c 强制退出",
+	"status.loginext": "tdl login 需要交互式终端：退出 TUI（q）后在终端运行",
+	"status.empty":    "无输出",
+	"status.ready":    "就绪。输出将在这里滚动。",
 
 	"sc.updown":    "移动",
 	"sc.enter":     "确认",
