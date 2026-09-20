@@ -92,12 +92,17 @@ func New() *cobra.Command {
 				}
 			}
 
-			stg, err := kv.NewWithMap(viper.GetStringMapString(consts.FlagStorage))
-			if err != nil {
-				return errors.Wrap(err, "create kv storage")
+			stg, ok := kv.TryFrom(cmd.Context())
+			if !ok {
+				var err error
+				stg, err = kv.NewWithMap(viper.GetStringMapString(consts.FlagStorage))
+				if err != nil {
+					return errors.Wrap(err, "create kv storage")
+				}
+				cmd.SetContext(kv.WithOwned(cmd.Context(), stg))
+			} else {
+				cmd.SetContext(kv.WithBorrowed(cmd.Context(), stg))
 			}
-
-			cmd.SetContext(kv.With(cmd.Context(), stg))
 
 			// extension manager client proxy
 			var dialer proxy.ContextDialer = proxy.Direct
@@ -117,8 +122,12 @@ func New() *cobra.Command {
 			return nil
 		},
 		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+			var closeErr error
+			if kv.Owns(cmd.Context()) {
+				closeErr = kv.From(cmd.Context()).Close()
+			}
 			return multierr.Combine(
-				kv.From(cmd.Context()).Close(),
+				closeErr,
 				logctx.From(cmd.Context()).Sync(),
 			)
 		},

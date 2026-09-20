@@ -62,11 +62,32 @@ func NewWithMap(o map[string]string) (Storage, error) {
 }
 
 type ctxKey struct{}
+type ownedKey struct{}
 
 func With(ctx context.Context, kv Storage) context.Context {
-	return context.WithValue(ctx, ctxKey{}, kv)
+	return WithOwned(ctx, kv)
+}
+
+func WithOwned(ctx context.Context, stg Storage) context.Context {
+	ctx = context.WithValue(ctx, ctxKey{}, stg)
+	return context.WithValue(ctx, ownedKey{}, true)
+}
+
+func WithBorrowed(ctx context.Context, stg Storage) context.Context {
+	ctx = context.WithValue(ctx, ctxKey{}, stg)
+	return context.WithValue(ctx, ownedKey{}, false)
+}
+
+func Owns(ctx context.Context) bool {
+	owned, _ := ctx.Value(ownedKey{}).(bool)
+	return owned
 }
 
 func From(ctx context.Context) Storage {
 	return ctx.Value(ctxKey{}).(Storage)
+}
+
+func TryFrom(ctx context.Context) (Storage, bool) {
+	stg, ok := ctx.Value(ctxKey{}).(Storage)
+	return stg, ok
 }
