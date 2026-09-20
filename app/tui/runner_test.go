@@ -41,7 +41,7 @@ func TestStartRunDeliversCompletionToProgram(t *testing.T) {
 	startRun(context.Background(), p, func(ctx context.Context, argv []string, out io.Writer) error {
 		_, _ = io.WriteString(out, "completed\n")
 		return nil
-	}, []string{"version"})
+	}, []string{"version"}, 1)
 
 	select {
 	case result := <-done:

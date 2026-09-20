@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -9,7 +10,25 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	xprogress "github.com/iyear/tdl/pkg/progress"
 )
+
+type progressSnapshot struct {
+	direction   xprogress.Direction
+	currentFile string
+	completed   int64
+	total       int64
+	tasksTotal  int
+	tasksDone   int
+	status      xprogress.Status
+	lastError   string
+	items       map[string]xprogress.Event
+	startedAt   time.Time
+	lastAt      time.Time
+	lastBytes   int64
+	speed       float64
+}
 
 type state int
 
@@ -35,20 +54,26 @@ type model struct {
 	menuIx  int
 
 	// form state (also used for settings)
-	form      *action
-	formIx    int
-	isSetting bool
+	form           *action
+	formIx         int
+	isSetting      bool
+	settingsBase   settings
+	settingsDirty  bool
+	settingsPrompt bool
 
-	spinner    spinner.Model
-	running    bool
-	showOutput bool
-	runErr     error
-	runLabel   string
-	runStart   time.Time
-	runLast    time.Duration
-	live       string
-	cancelRun  func()
-	stopReq    bool // ctrl+c pressed once already: next one force quits
+	spinner     spinner.Model
+	running     bool
+	showOutput  bool
+	runErr      error
+	runLabel    string
+	runStart    time.Time
+	runLast     time.Duration
+	progress    progressSnapshot
+	runID       uint64
+	detailsOpen bool
+	live        string
+	stopReq     bool // ctrl+c pressed once already: next one force quits
+	cancelRun   func()
 
 	vp     viewport.Model
 	follow bool
@@ -118,6 +143,9 @@ func (m *model) openSettings() {
 	if m.lang == LangZh {
 		langIx = 1
 	}
+	m.settingsBase = m.set
+	m.settingsDirty = false
+	m.settingsPrompt = false
 	m.form = &action{
 		id:       "settings",
 		titleKey: "menu.settings",
@@ -134,7 +162,7 @@ func (m *model) openSettings() {
 	m.focusFormField(0)
 }
 
-func (m *model) saveSettingsFromForm() {
+func (m *model) applySettingsDraft() {
 	f := m.form.fields
 	m.lang = Lang(f[0].choices[f[0].choiceIx])
 	m.set.Language = string(m.lang)
@@ -143,6 +171,29 @@ func (m *model) saveSettingsFromForm() {
 	m.set.Threads = f[3].value()
 	m.set.Limit = f[4].value()
 	_ = saveSettings(m.set)
+	m.settingsBase = m.set
+	m.settingsDirty = false
+}
+
+func (m *model) discardSettingsDraft() {
+	m.set = m.settingsBase
+	m.lang = Lang(m.set.Language)
+	m.form = nil
+	m.isSetting = false
+	m.settingsDirty = false
+	m.settingsPrompt = false
+}
+
+func (m *model) updateSettingsDirty() {
+	if !m.isSetting || m.form == nil {
+		return
+	}
+	f := m.form.fields
+	m.settingsDirty = string(Lang(f[0].choices[f[0].choiceIx])) != m.settingsBase.Language ||
+		f[1].value() != m.settingsBase.NS ||
+		f[2].value() != m.settingsBase.Proxy ||
+		f[3].value() != m.settingsBase.Threads ||
+		f[4].value() != m.settingsBase.Limit
 }
 
 // globalArgs returns persistent flags applied to every executed command.
@@ -191,19 +242,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
+	case progressMsg:
+		if msg.runID != m.runID {
+			return m, nil
+		}
+		m.applyProgress(msg.event)
+		return m, nil
+
 	case outputLineMsg:
+		if msg.runID != m.runID {
+			return m, nil
+		}
 		m.appendLine(msg.text)
 		return m, nil
 
 	case liveLineMsg:
+		if msg.runID != m.runID {
+			return m, nil
+		}
 		m.live = msg.text
 		return m, nil
 
 	case runDoneMsg:
+		if msg.runID != m.runID {
+			return m, nil
+		}
 		m.running = false
 		m.runErr = msg.err
 		m.runLast = msg.elapsed
 		m.live = ""
+		m.stopReq = false
+		m.progress.status = xprogress.StatusDone
+		if msg.err != nil {
+			m.progress.status = xprogress.StatusFailed
+			m.progress.lastError = msg.err.Error()
+		}
 		m.appendLine("")
 		if msg.err != nil {
 			m.appendLine(stErr.Render(m.lang.t("status.failed") + " " + msg.elapsed.Truncate(time.Millisecond).String()))
@@ -217,6 +290,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
+		if m.settingsPrompt {
+			return m.handleSettingsPrompt(msg)
+		}
 		return m.handleKey(msg)
 	}
 	return m, nil
@@ -270,6 +346,19 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) handleSettingsPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "s", "y":
+		m.applySettingsDraft()
+		m.settingsPrompt = false
+	case "d", "n":
+		m.discardSettingsDraft()
+	case "esc", "c":
+		m.settingsPrompt = false
+	}
+	return m, nil
+}
+
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Ctrl+C: stop a running command first, quit on the next press — an
 	// exec that ignores cancellation must never trap the user in the TUI
@@ -298,6 +387,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case stateForm:
+		if m.isSetting && m.settingsPrompt {
+			return m, nil
+		}
+		if m.isSetting {
+			m.updateSettingsDirty()
+		}
 		f := &m.form.fields[m.formIx]
 		switch msg.String() {
 		case "up":
@@ -328,6 +423,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m.launchForm()
 		case "esc":
+			if m.isSetting && m.settingsDirty {
+				m.settingsPrompt = true
+				return m, nil
+			}
 			m.form = nil
 			m.isSetting = false
 		default:
@@ -421,9 +520,7 @@ func (m model) openMenuItem(ix int) (tea.Model, tea.Cmd) {
 
 func (m model) launchForm() (tea.Model, tea.Cmd) {
 	if m.isSetting {
-		m.saveSettingsFromForm()
-		m.form = nil
-		m.isSetting = false
+		m.applySettingsDraft()
 		return m, nil
 	}
 	return m.launchAction(m.form)
@@ -445,8 +542,62 @@ func (m model) launchAction(a *action) (tea.Model, tea.Cmd) {
 	m.live = ""
 	m.stopReq = false
 
-	m.cancelRun = startRun(m.ctx, m.program, m.exec, argv)
+	m.runID++
+	m.progress = progressSnapshot{status: xprogress.StatusRunning, items: make(map[string]xprogress.Event)}
+	m.detailsOpen = false
+	m.stopReq = false
+	m.cancelRun = startRun(m.ctx, m.program, m.exec, argv, m.runID)
 	return m, m.spinner.Tick
+}
+
+func (m *model) applyProgress(event xprogress.Event) {
+	if m.progress.items == nil {
+		m.progress.items = make(map[string]xprogress.Event)
+	}
+	m.progress.items[event.TaskID] = event
+	var completed, total int64
+	var done int
+	for _, item := range m.progress.items {
+		if item.TotalBytes > 0 {
+			total += item.TotalBytes
+			completed += item.CompletedBytes
+		}
+		if item.Kind == xprogress.KindFinished {
+			done++
+		}
+	}
+	m.progress.direction = event.Direction
+	m.progress.currentFile = event.FileName
+	m.progress.completed = completed
+	m.progress.total = total
+	if event.At.IsZero() {
+		event.At = time.Now()
+	}
+	if m.progress.startedAt.IsZero() {
+		m.progress.startedAt = event.At
+	}
+	if !m.progress.lastAt.IsZero() && event.At.After(m.progress.lastAt) && completed >= m.progress.lastBytes {
+		m.progress.speed = float64(completed-m.progress.lastBytes) / event.At.Sub(m.progress.lastAt).Seconds()
+	}
+	m.progress.lastAt = event.At
+	m.progress.lastBytes = completed
+	if event.TasksTotal > 0 {
+		m.progress.tasksTotal = event.TasksTotal
+	}
+	m.progress.tasksDone = done
+	if event.Kind == xprogress.KindFinished {
+		m.progress.status = event.Status
+		m.progress.lastError = event.Err
+	} else {
+		m.progress.status = xprogress.StatusRunning
+	}
+}
+
+func (m model) progressPercent() (float64, bool) {
+	if m.progress.total <= 0 {
+		return 0, false
+	}
+	return float64(m.progress.completed) / float64(m.progress.total) * 100, true
 }
 
 func (m model) stopRun() (tea.Model, tea.Cmd) {
@@ -470,10 +621,17 @@ func (m model) switchNS(ns string) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) toMenu() {
+	m.runID++ // invalidate late messages from the completed/aborted run
 	m.form = nil
 	m.isSetting = false
 	m.showOutput = false
 	m.live = ""
+	m.scrollback = nil
+	m.progress = progressSnapshot{}
+	m.runErr = nil
+	m.runLast = 0
+	m.cancelRun = nil
+	m.vp.SetContent("")
 }
 
 func (m model) state() state {
@@ -694,14 +852,14 @@ func (m model) viewForm() string {
 					continue
 				}
 				if j == f.choiceIx {
-					chs = append(chs, stFieldFocus.Render(c))
+					chs = append(chs, stFieldFocus.Render(localizedChoice(m.lang, c)))
 				} else {
-					chs = append(chs, stHint.Render(c))
+					chs = append(chs, stHint.Render(localizedChoice(m.lang, c)))
 				}
 			}
 			value = strings.Join(chs, stShortcutSep.Render("/")) + "  " + stFieldFlag.Render(f.flag)
 		default:
-			value = stFieldValue.Render(f.ti.View()) + "  " + stFieldFlag.Render(f.flag)
+			value = stFieldValue.Render(localizedPlaceholder(m.lang, f.ti.View())) + "  " + stFieldFlag.Render(f.flag)
 		}
 		if i == m.formIx {
 			cursor = stFieldFocus.Render("▸ ")
@@ -717,29 +875,41 @@ func (m model) viewStatus() string {
 	if !m.running {
 		return ""
 	}
-	elapsed := time.Since(m.runStart).Truncate(time.Millisecond)
-	live := m.live
+	percent, determinate := m.progressPercent()
+	barWidth := m.width - 42
+	if barWidth < 12 {
+		barWidth = 12
+	}
+	filled := 0
+	if determinate {
+		filled = int(percent / 100 * float64(barWidth))
+	}
+	if filled > barWidth {
+		filled = barWidth
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+	pct := "--"
+	if determinate {
+		pct = fmt.Sprintf("%4.1f%%", percent)
+	}
+	file := m.progress.currentFile
+	if file == "" {
+		file = m.runLabel
+	}
 	if m.stopReq {
-		live = m.lang.t("status.stopping")
+		file = m.lang.t("status.stopping")
 	}
-	// keep the line inside the width
-	budget := m.width - lipgloss.Width(m.runLabel) - 20
-	if budget > 4 && lipgloss.Width(live) > budget {
-		r := []rune(live)
-		live = string(r[:min(budget-1, len(r))]) + "…"
+	line := stFieldFocus.Render(file) + " " + stOK.Render(bar) + " " + stHint.Render(pct)
+	if m.progress.tasksTotal > 0 {
+		line += " " + stHint.Render(fmt.Sprintf("%d/%d", m.progress.tasksDone, m.progress.tasksTotal))
 	}
-	stop := stStopKey.Render("[stop]")
-	stopPlain := "[stop]"
-	pad := m.width - lipgloss.Width(m.spinner.View()) - lipgloss.Width(m.runLabel) - len(elapsed.String()) - lipgloss.Width(live) - len(stopPlain) - 4
-	if pad < 1 {
-		pad = 1
-	}
-	line := m.spinner.View() + " " + stFieldFocus.Render(m.runLabel) + " " +
-		stHint.Render(elapsed.String()) + " " + live + strings.Repeat(" ", pad) + stop
 	return stStatusBg.Render(line)
 }
 
 func (m model) viewPrompt() string {
+	if m.settingsPrompt {
+		return stPromptBorderActive.Width(m.width - 2).Render(stHint.Render(m.lang.t("set.unsaved")))
+	}
 	var text string
 	switch m.state() {
 	case stateForm:

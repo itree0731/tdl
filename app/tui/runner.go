@@ -9,22 +9,36 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
+
+	xprogress "github.com/iyear/tdl/pkg/progress"
 )
 
 // Executor runs one tdl command with the given argv, writing combined
 // output to out. It is injected from package cmd to avoid an import cycle.
 type Executor func(ctx context.Context, argv []string, out io.Writer) error
 
-type outputLineMsg struct{ text string } // complete line, for the scrollback
-type liveLineMsg struct{ text string }   // \r-refreshed segment, status line only
+type progressMsg struct {
+	runID uint64
+	event xprogress.Event
+}
+
+type outputLineMsg struct {
+	runID uint64
+	text  string
+} // complete line, for the current task details
+type liveLineMsg struct {
+	runID uint64
+	text  string
+} // legacy live output, kept in details only
 type runDoneMsg struct {
+	runID   uint64
 	err     error
 	elapsed time.Duration
 }
 
 // startRun launches argv in the background and streams its output into the
 // program as messages. The returned func cancels the run.
-func startRun(parent context.Context, p *tea.Program, exec Executor, argv []string) (cancel func()) {
+func startRun(parent context.Context, p *tea.Program, exec Executor, argv []string, runID uint64) (cancel func()) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -45,14 +59,17 @@ func startRun(parent context.Context, p *tea.Program, exec Executor, argv []stri
 		// from code that bypasses the cobra writer (e.g. go-pretty bars)
 		pr, pw, err := os.Pipe()
 		if err != nil {
-			send(runDoneMsg{err: err, elapsed: time.Since(start)})
+			send(runDoneMsg{runID: runID, err: err, elapsed: time.Since(start)})
 			return
 		}
 		defer pr.Close()
 
+		childCtx := xprogress.WithSink(ctx, xprogress.SinkFunc(func(event xprogress.Event) {
+			send(progressMsg{runID: runID, event: event})
+		}))
 		result := make(chan error, 1)
 		go func() {
-			err := exec(ctx, argv, pw)
+			err := exec(childCtx, argv, pw)
 			_ = pw.Close() // unblocks the reader below
 			result <- err
 		}()
@@ -66,10 +83,10 @@ func startRun(parent context.Context, p *tea.Program, exec Executor, argv []stri
 				lines, live, rest := splitStream(buf)
 				buf = rest
 				for _, l := range lines {
-					send(outputLineMsg{text: l})
+					send(outputLineMsg{runID: runID, text: l})
 				}
 				if live != "" {
-					send(liveLineMsg{text: live})
+					send(liveLineMsg{runID: runID, text: live})
 				}
 			}
 			if err != nil {
@@ -77,11 +94,11 @@ func startRun(parent context.Context, p *tea.Program, exec Executor, argv []stri
 			}
 		}
 		if rest := strings.TrimRight(string(buf), "\r\n"); strings.TrimSpace(rest) != "" {
-			send(outputLineMsg{text: rest})
+			send(outputLineMsg{runID: runID, text: rest})
 		}
 
 		runErr := <-result
-		send(runDoneMsg{err: runErr, elapsed: time.Since(start)})
+		send(runDoneMsg{runID: runID, err: runErr, elapsed: time.Since(start)})
 	}()
 
 	return cancel

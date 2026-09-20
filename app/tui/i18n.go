@@ -17,6 +17,62 @@ const (
 
 type dict map[string]string
 
+var zhFieldLabels = map[string]string{
+	"Login type": "登录方式", "Desktop path": "桌面客户端路径", "Passcode": "登录密码",
+	"Message URLs (comma separated)": "消息链接（逗号分隔）", "Export files (comma separated)": "导出文件（逗号分隔）", "Output dir": "输出目录",
+	"Include ext": "包含扩展名", "Exclude ext": "排除扩展名", "Rewrite ext": "重写扩展名", "Skip same name": "跳过同名文件",
+	"Newest first": "最新优先", "Grouped media": "媒体分组", "Takeout session": "Takeout 会话", "Serve over HTTP": "通过 HTTP 提供服务",
+	"Paths (comma separated)": "路径（逗号分隔）", "Chat": "会话目标", "Topic id": "主题 ID", "To (router expr)": "目标（路由表达式）",
+	"Remove after upload": "上传后删除", "As photo": "作为图片发送", "Output": "输出格式", "Filter expr": "过滤表达式",
+	"Export type": "导出类型", "Input (comma separated)": "输入（逗号分隔）", "Output file": "输出文件", "With content": "包含内容",
+	"All messages": "全部消息", "Raw struct": "原始结构", "Chat domain": "会话域名", "From (comma separated)": "来源（逗号分隔）",
+	"To": "目标", "Edit expr": "编辑表达式", "Mode": "模式", "Silent": "静默发送", "Dry run": "演练模式",
+	"No grouped detect": "不检测分组", "Reverse order": "倒序", "Destination": "目标文件", "Backup file": "备份文件",
+	"No confirmation": "跳过确认", "Target version": "目标版本", "Force reinstall": "强制重装",
+}
+
+var zhChoiceLabels = map[string]string{
+	"code": "验证码", "desktop": "桌面客户端", "json": "JSON", "csv": "CSV", "table": "表格",
+	"time": "时间", "id": "ID", "last": "最后一条", "copy": "复制", "forward": "转发",
+	"en": "英文", "zh": "中文",
+}
+
+var zhPlaceholders = map[string]string{
+	"official client path": "官方客户端路径", "empty if none": "没有密码则留空", "https://t.me/...": "https://t.me/...",
+	"result.json": "result.json", "downloads": "下载目录", "mp4,mp3": "mp4,mp3", "png,jpg": "png,jpg",
+	"D:\\videos": "D:\\videos", "empty = Saved Messages": "留空表示已保存的消息", "0": "0", "CHAT expr": "会话或路由表达式",
+	"true": "true", "depends on type": "根据导出类型填写", "tdl-export.json": "tdl-export.json", "channel domain": "频道域名",
+	"links or export files": "链接或导出文件", "CHAT or router expr": "会话或路由表达式", "empty = no edit": "留空表示不编辑",
+	"<date>.backup.tdl": "<日期>.backup.tdl", "xxx.backup.tdl": "xxx.backup.tdl", "v0.20.4": "v0.20.4",
+}
+
+func localizedFieldLabel(l Lang, raw string) string {
+	if l == LangZh {
+		if value, ok := zhFieldLabels[raw]; ok {
+			return value
+		}
+	}
+	return raw
+}
+
+func localizedChoice(l Lang, raw string) string {
+	if l == LangZh {
+		if value, ok := zhChoiceLabels[raw]; ok {
+			return value
+		}
+	}
+	return raw
+}
+
+func localizedPlaceholder(l Lang, raw string) string {
+	if l == LangZh {
+		if value, ok := zhPlaceholders[raw]; ok {
+			return value
+		}
+	}
+	return raw
+}
+
 var en = dict{
 	// menu
 	"menu.title":           "What do you want to do?",
@@ -48,14 +104,26 @@ var en = dict{
 	"menu.quit.desc":       "Exit the TUI",
 
 	// form
-	"form.run":        "Run",
-	"form.back":       "Back",
-	"form.required":   "required",
-	"form.optional":   "optional",
-	"form.bool.on":    "on",
-	"form.bool.off":   "off",
-	"form.extra":      "Extra args",
-	"form.extra.desc": "Appended verbatim, e.g. --takeout --limit 4",
+	"form.run":             "Run",
+	"form.back":            "Back",
+	"form.required":        "required",
+	"form.optional":        "optional",
+	"form.bool.on":         "on",
+	"form.bool.off":        "off",
+	"form.extra":           "Extra args",
+	"form.extra.desc":      "Appended verbatim, e.g. --takeout --limit 4",
+	"field.login.type":     "Login type",
+	"field.login.desktop":  "Desktop path",
+	"field.login.passcode": "Passcode",
+	"field.dl.urls":        "Message URLs",
+	"field.dl.files":       "Export files",
+	"field.dl.dir":         "Output directory",
+	"field.up.paths":       "Upload paths",
+	"field.up.chat":        "Chat",
+	"field.chat.filter":    "Filter expression",
+	"field.common.include": "Include extensions",
+	"field.common.exclude": "Exclude extensions",
+	"field.common.extra":   "Extra arguments",
 
 	// settings
 	"set.language": "Language",
@@ -64,6 +132,7 @@ var en = dict{
 	"set.proxy":    "Proxy",
 	"set.threads":  "Threads",
 	"set.limit":    "Limit",
+	"set.unsaved":  "Unsaved changes: [s] save  [d] discard  [esc] continue editing",
 
 	// status
 	"status.running":  "Running",
@@ -121,14 +190,26 @@ var zh = dict{
 	"menu.quit":            "退出",
 	"menu.quit.desc":       "退出 TUI",
 
-	"form.run":        "运行",
-	"form.back":       "返回",
-	"form.required":   "必填",
-	"form.optional":   "可选",
-	"form.bool.on":    "开",
-	"form.bool.off":   "关",
-	"form.extra":      "附加参数",
-	"form.extra.desc": "原样追加，如 --takeout --limit 4",
+	"form.run":             "运行",
+	"form.back":            "返回",
+	"form.required":        "必填",
+	"form.optional":        "可选",
+	"form.bool.on":         "开",
+	"form.bool.off":        "关",
+	"form.extra":           "附加参数",
+	"form.extra.desc":      "原样追加，如 --takeout --limit 4",
+	"field.login.type":     "登录方式",
+	"field.login.desktop":  "桌面客户端路径",
+	"field.login.passcode": "登录密码",
+	"field.dl.urls":        "消息链接",
+	"field.dl.files":       "导出文件",
+	"field.dl.dir":         "输出目录",
+	"field.up.paths":       "上传路径",
+	"field.up.chat":        "会话目标",
+	"field.chat.filter":    "过滤表达式",
+	"field.common.include": "包含扩展名",
+	"field.common.exclude": "排除扩展名",
+	"field.common.extra":   "附加参数",
 
 	"set.language": "语言",
 	"set.global":   "全局选项（对所有命令生效）",
@@ -136,6 +217,7 @@ var zh = dict{
 	"set.proxy":    "代理",
 	"set.threads":  "线程数",
 	"set.limit":    "并发数",
+	"set.unsaved":  "有未保存修改：[s] 保存  [d] 放弃  [esc] 继续编辑",
 
 	"status.running":  "运行中",
 	"status.done":     "完成，用时",

@@ -17,29 +17,45 @@ import (
 	"github.com/iyear/tdl/core/downloader"
 	"github.com/iyear/tdl/core/util/fsutil"
 	"github.com/iyear/tdl/pkg/prog"
+	xprogress "github.com/iyear/tdl/pkg/progress"
 	"github.com/iyear/tdl/pkg/utils"
 )
 
 type progress struct {
-	pw       pw.Writer
-	trackers *sync.Map // map[ID]*pw.Tracker
-	opts     Options
+	ctx        context.Context
+	pw         pw.Writer
+	trackers   *sync.Map // map[ID]*pw.Tracker
+	opts       Options
+	tasksTotal int
 
 	it *iter
 }
 
-func newProgress(p pw.Writer, it *iter, opts Options) *progress {
+func newProgress(ctx context.Context, p pw.Writer, it *iter, opts Options) *progress {
 	return &progress{
-		pw:       p,
-		trackers: &sync.Map{},
-		opts:     opts,
-		it:       it,
+		ctx:        ctx,
+		pw:         p,
+		trackers:   &sync.Map{},
+		opts:       opts,
+		tasksTotal: it.Total(),
+		it:         it,
 	}
 }
 
 func (p *progress) OnAdd(elem downloader.Elem) {
+	e := elem.(*iterElem)
 	tracker := prog.AppendTracker(p.pw, utils.Byte.FormatBinaryBytes, p.processMessage(elem), elem.File().Size())
-	p.trackers.Store(elem.(*iterElem).id, tracker)
+	p.trackers.Store(e.id, tracker)
+	xprogress.Emit(p.ctx, xprogress.Event{
+		Kind:       xprogress.KindStarted,
+		Direction:  xprogress.DirectionDownload,
+		Status:     xprogress.StatusRunning,
+		TaskID:     fmt.Sprintf("%d", e.id),
+		TasksTotal: p.tasksTotal,
+		FileName:   strings.TrimSuffix(e.to.Name(), tempExt),
+		TotalBytes: elem.File().Size(),
+		At:         time.Now(),
+	})
 }
 
 func (p *progress) OnDownload(elem downloader.Elem, state downloader.ProgressState) {
@@ -51,6 +67,18 @@ func (p *progress) OnDownload(elem downloader.Elem, state downloader.ProgressSta
 	t := tracker.(*pw.Tracker)
 	t.UpdateTotal(state.Total)
 	t.SetValue(state.Downloaded)
+	e := elem.(*iterElem)
+	xprogress.Emit(p.ctx, xprogress.Event{
+		Kind:           xprogress.KindUpdated,
+		Direction:      xprogress.DirectionDownload,
+		Status:         xprogress.StatusRunning,
+		TaskID:         fmt.Sprintf("%d", e.id),
+		TasksTotal:     p.tasksTotal,
+		FileName:       strings.TrimSuffix(e.to.Name(), tempExt),
+		CompletedBytes: state.Downloaded,
+		TotalBytes:     state.Total,
+		At:             time.Now(),
+	})
 }
 
 func (p *progress) OnDone(elem downloader.Elem, err error) {
@@ -68,6 +96,22 @@ func (p *progress) OnDone(elem downloader.Elem, err error) {
 	}
 
 	if err != nil {
+		status := xprogress.StatusFailed
+		if errors.Is(err, context.Canceled) {
+			status = xprogress.StatusCanceled
+		}
+		xprogress.Emit(p.ctx, xprogress.Event{
+			Kind:           xprogress.KindFinished,
+			Direction:      xprogress.DirectionDownload,
+			Status:         status,
+			TaskID:         fmt.Sprintf("%d", e.id),
+			TasksTotal:     p.tasksTotal,
+			FileName:       strings.TrimSuffix(e.to.Name(), tempExt),
+			CompletedBytes: e.file.Size,
+			TotalBytes:     e.file.Size,
+			At:             time.Now(),
+			Err:            err.Error(),
+		})
 		if !errors.Is(err, context.Canceled) { // don't report user cancel
 			p.fail(t, elem, errors.Wrap(err, "progress"))
 		}
@@ -76,6 +120,17 @@ func (p *progress) OnDone(elem downloader.Elem, err error) {
 	}
 
 	p.it.Finish(e.logicalPos)
+	xprogress.Emit(p.ctx, xprogress.Event{
+		Kind:           xprogress.KindFinished,
+		Direction:      xprogress.DirectionDownload,
+		Status:         xprogress.StatusDone,
+		TaskID:         fmt.Sprintf("%d", e.id),
+		TasksTotal:     p.tasksTotal,
+		FileName:       strings.TrimSuffix(e.to.Name(), tempExt),
+		CompletedBytes: e.file.Size,
+		TotalBytes:     e.file.Size,
+		At:             time.Now(),
+	})
 
 	if err := p.donePost(e); err != nil {
 		p.fail(t, elem, errors.Wrap(err, "post file"))

@@ -162,9 +162,9 @@ func TestModelFlow(t *testing.T) {
 	}
 
 	// stream output + completion the way the runner would
-	mm, _ = m.Update(outputLineMsg{text: "hello from stub"})
-	mm, _ = mm.Update(liveLineMsg{text: "99%"})
-	mm, _ = mm.Update(runDoneMsg{err: nil, elapsed: time.Second})
+	mm, _ = m.Update(outputLineMsg{runID: m.runID, text: "hello from stub"})
+	mm, _ = mm.Update(liveLineMsg{runID: m.runID, text: "99%"})
+	mm, _ = mm.Update(runDoneMsg{runID: m.runID, err: nil, elapsed: time.Second})
 	m = mm.(model)
 	if m.running {
 		t.Fatal("still running after runDoneMsg")
@@ -204,8 +204,14 @@ func TestModelFlow(t *testing.T) {
 	if m.lang != LangZh {
 		t.Errorf("lang = %v, want zh", m.lang)
 	}
+	if m.state() != stateForm || !m.isSetting {
+		t.Fatalf("after settings apply state = %v setting=%v", m.state(), m.isSetting)
+	}
+	// leaving settings after apply should return to a clean menu
+	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = mm.(model)
 	if m.state() != stateMenu {
-		t.Fatalf("after settings save state = %v", m.state())
+		t.Fatalf("after settings exit state = %v", m.state())
 	}
 
 	// persisted?
@@ -293,21 +299,52 @@ func TestLoginActionGivesGuidance(t *testing.T) {
 	m := newModel(exec, nil)
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m2 := asModel(mm)
-
 	r, _ := m2.openMenuItem(indexOfAction(m2, "login"))
 	m3 := asModel(r)
-
-	if m3.running {
-		t.Fatal("login launched in-process")
-	}
-	if !m3.showOutput {
-		t.Fatal("guidance should show in the output pane")
+	if m3.running || !m3.showOutput {
+		t.Fatalf("login state running=%v output=%v", m3.running, m3.showOutput)
 	}
 	last := m3.scrollback[len(m3.scrollback)-1]
 	if !strings.Contains(last, "tdl login") {
 		t.Fatalf("guidance line = %q", last)
 	}
 }
+
+func TestOldRunMessagesAreIgnored(t *testing.T) {
+	m := newModel(stubExec, nil)
+	m.runID = 2
+	m.running = true
+	m.showOutput = true
+	mm, _ := m.Update(outputLineMsg{runID: 1, text: "old"})
+	m2 := asModel(mm)
+	if len(m2.scrollback) != 0 {
+		t.Fatalf("old scrollback = %v", m2.scrollback)
+	}
+	mm, _ = m2.Update(runDoneMsg{runID: 1})
+	m3 := asModel(mm)
+	if !m3.running {
+		t.Fatal("old run completion changed current run")
+	}
+}
+
+func TestSettingsApplyStaysOpen(t *testing.T) {
+	m := newModel(stubExec, nil)
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = asModel(mm)
+	r, _ := m.openMenuItem(indexOfAction(m, "settings"))
+	m = asModel(r)
+	m.form.fields[1].ti.SetValue("work")
+	m.updateSettingsDirty()
+	if !m.settingsDirty {
+		t.Fatal("settings edit was not marked dirty")
+	}
+	r, _ = m.launchForm()
+	m = asModel(r)
+	if !m.isSetting || m.form == nil || m.settingsDirty {
+		t.Fatalf("settings state after apply: setting=%v form=%v dirty=%v", m.isSetting, m.form != nil, m.settingsDirty)
+	}
+}
+
 func TestExtraFieldFocusDoesNotPanic(t *testing.T) {
 	m := newModel(stubExec, nil)
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -331,6 +368,9 @@ func TestExtraFieldFocusDoesNotPanic(t *testing.T) {
 // Header account chips: click one to switch the namespace every command
 // runs under; inert while a command is executing.
 func TestAccountChipSwitch(t *testing.T) {
+	original := loadSettings()
+	_ = saveSettings(settings{Language: string(LangEn), NS: "default"})
+	defer func() { _ = saveSettings(original) }()
 	exec := func(ctx context.Context, argv []string, out io.Writer) error { return nil }
 	m := newModel(exec, []string{"default", "work"})
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
@@ -360,7 +400,6 @@ func TestAccountChipSwitch(t *testing.T) {
 	if s := loadSettings(); s.NS != "work" {
 		t.Fatalf("persisted NS = %q", s.NS)
 	}
-	_ = saveSettings(settings{Language: "en"}) // restore for other tests
 
 	// clicking the chip of an account again keeps it
 	r2, _ := m3.Update(tea.MouseMsg{X: x, Y: 0, Button: tea.MouseButtonLeft})

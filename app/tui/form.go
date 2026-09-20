@@ -19,6 +19,7 @@ const (
 type field struct {
 	kind     kind
 	labelKey string // i18n key, or plain text when it contains no dot
+	helpKey  string
 	flag     string
 	def      string // text default: value == def means "use tdl's own default"
 	choices  []string
@@ -32,7 +33,14 @@ func (f *field) label(l Lang) string {
 	if strings.Contains(f.labelKey, ".") {
 		return l.t(f.labelKey)
 	}
-	return f.labelKey
+	return localizedFieldLabel(l, f.labelKey)
+}
+
+func (f *field) help(l Lang) string {
+	if f.helpKey == "" {
+		return ""
+	}
+	return l.t(f.helpKey)
 }
 
 func textField(labelKey, flag, def, ph string) field {

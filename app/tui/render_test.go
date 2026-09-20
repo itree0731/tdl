@@ -84,7 +84,7 @@ func TestRenderRunSnapshot(t *testing.T) {
 	}
 
 	m = key(t, m, tea.KeyMsg{Type: tea.KeyCtrlC}) // stop it
-	mm, _ := m.Update(runDoneMsg{err: nil, elapsed: 1500 * time.Millisecond})
+	mm, _ := m.Update(runDoneMsg{runID: m.runID, err: nil, elapsed: 1500 * time.Millisecond})
 	m = mm.(model)
 
 	out := renderPlain(m)
@@ -115,9 +115,9 @@ func TestRenderSettingsZhSnapshot(t *testing.T) {
 
 	out := renderPlain(m)
 	t.Log("\n" + out)
-	for _, want := range []string{"想做什么", "下载", "设置", "退出"} {
+	for _, want := range []string{"设置", "语言", "命名空间", "代理", "线程数", "并发数"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("zh menu render missing %q", want)
+			t.Errorf("zh settings render missing %q", want)
 		}
 	}
 	_ = saveSettings(settings{Language: string(LangEn)})

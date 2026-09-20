@@ -1,9 +1,11 @@
 package up
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/go-faster/errors"
@@ -11,12 +13,15 @@ import (
 
 	"github.com/iyear/tdl/core/uploader"
 	"github.com/iyear/tdl/pkg/prog"
+	xprogress "github.com/iyear/tdl/pkg/progress"
 	"github.com/iyear/tdl/pkg/utils"
 )
 
 type progress struct {
-	pw       pw.Writer
-	trackers *sync.Map // map[tuple]*pw.Tracker
+	ctx        context.Context
+	pw         pw.Writer
+	trackers   *sync.Map // map[tuple]*pw.Tracker
+	tasksTotal int
 }
 
 type tuple struct {
@@ -24,16 +29,29 @@ type tuple struct {
 	to   int64
 }
 
-func newProgress(p pw.Writer) *progress {
+func newProgress(ctx context.Context, p pw.Writer, tasksTotal int) *progress {
 	return &progress{
-		pw:       p,
-		trackers: &sync.Map{},
+		ctx:        ctx,
+		pw:         p,
+		trackers:   &sync.Map{},
+		tasksTotal: tasksTotal,
 	}
 }
 
 func (p *progress) OnAdd(elem uploader.Elem) {
 	tracker := prog.AppendTracker(p.pw, utils.Byte.FormatBinaryBytes, p.processMessage(elem), elem.File().Size())
 	p.trackers.Store(p.tuple(elem), tracker)
+	e := elem.(*iterElem)
+	xprogress.Emit(p.ctx, xprogress.Event{
+		Kind:       xprogress.KindStarted,
+		Direction:  xprogress.DirectionUpload,
+		Status:     xprogress.StatusRunning,
+		TaskID:     e.file.File.Name(),
+		TasksTotal: p.tasksTotal,
+		FileName:   e.file.File.Name(),
+		TotalBytes: elem.File().Size(),
+		At:         time.Now(),
+	})
 }
 
 func (p *progress) OnUpload(elem uploader.Elem, state uploader.ProgressState) {
@@ -45,6 +63,18 @@ func (p *progress) OnUpload(elem uploader.Elem, state uploader.ProgressState) {
 	t := tracker.(*pw.Tracker)
 	t.UpdateTotal(state.Total)
 	t.SetValue(state.Uploaded)
+	e := elem.(*iterElem)
+	xprogress.Emit(p.ctx, xprogress.Event{
+		Kind:           xprogress.KindUpdated,
+		Direction:      xprogress.DirectionUpload,
+		Status:         xprogress.StatusRunning,
+		TaskID:         e.file.File.Name(),
+		TasksTotal:     p.tasksTotal,
+		FileName:       e.file.File.Name(),
+		CompletedBytes: state.Uploaded,
+		TotalBytes:     state.Total,
+		At:             time.Now(),
+	})
 }
 
 func (p *progress) OnDone(elem uploader.Elem, err error) {
@@ -61,9 +91,37 @@ func (p *progress) OnDone(elem uploader.Elem, err error) {
 	}
 
 	if err != nil {
+		status := xprogress.StatusFailed
+		if errors.Is(err, context.Canceled) {
+			status = xprogress.StatusCanceled
+		}
+		xprogress.Emit(p.ctx, xprogress.Event{
+			Kind:           xprogress.KindFinished,
+			Direction:      xprogress.DirectionUpload,
+			Status:         status,
+			TaskID:         e.file.File.Name(),
+			TasksTotal:     p.tasksTotal,
+			FileName:       e.file.File.Name(),
+			CompletedBytes: e.file.Size(),
+			TotalBytes:     e.file.Size(),
+			At:             time.Now(),
+			Err:            err.Error(),
+		})
 		p.fail(t, elem, errors.Wrap(err, "progress"))
 		return
 	}
+
+	xprogress.Emit(p.ctx, xprogress.Event{
+		Kind:           xprogress.KindFinished,
+		Direction:      xprogress.DirectionUpload,
+		Status:         xprogress.StatusDone,
+		TaskID:         e.file.File.Name(),
+		TasksTotal:     p.tasksTotal,
+		FileName:       e.file.File.Name(),
+		CompletedBytes: e.file.Size(),
+		TotalBytes:     e.file.Size(),
+		At:             time.Now(),
+	})
 
 	if e.remove {
 		if err := os.Remove(e.file.File.Name()); err != nil {
