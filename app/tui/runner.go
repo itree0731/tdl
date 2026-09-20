@@ -24,8 +24,11 @@ type runDoneMsg struct {
 
 // startRun launches argv in the background and streams its output into the
 // program as messages. The returned func cancels the run.
-func startRun(p *tea.Program, exec Executor, argv []string) (cancel func()) {
-	ctx, cancel := context.WithCancel(context.Background())
+func startRun(parent context.Context, p *tea.Program, exec Executor, argv []string) (cancel func()) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
 
 	go func() {
 		start := time.Now()
@@ -42,14 +45,16 @@ func startRun(p *tea.Program, exec Executor, argv []string) (cancel func()) {
 		// from code that bypasses the cobra writer (e.g. go-pretty bars)
 		pr, pw, err := os.Pipe()
 		if err != nil {
-			p.Send(runDoneMsg{err: err})
+			send(runDoneMsg{err: err, elapsed: time.Since(start)})
 			return
 		}
-		var runErr error
+		defer pr.Close()
 
+		result := make(chan error, 1)
 		go func() {
-			runErr = exec(ctx, argv, pw)
+			err := exec(ctx, argv, pw)
 			_ = pw.Close() // unblocks the reader below
+			result <- err
 		}()
 
 		buf := make([]byte, 0, 8192)
@@ -75,6 +80,7 @@ func startRun(p *tea.Program, exec Executor, argv []string) (cancel func()) {
 			send(outputLineMsg{text: rest})
 		}
 
+		runErr := <-result
 		send(runDoneMsg{err: runErr, elapsed: time.Since(start)})
 	}()
 

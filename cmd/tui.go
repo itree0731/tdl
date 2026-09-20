@@ -5,11 +5,29 @@ import (
 	"context"
 	"io"
 	"os"
+	"sort"
+	"time"
 
+	"github.com/go-faster/errors"
+	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/tgerr"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"go.uber.org/zap"
 
 	"github.com/iyear/tdl/app/tui"
+	"github.com/iyear/tdl/core/logctx"
+	"github.com/iyear/tdl/core/storage"
+	"github.com/iyear/tdl/pkg/consts"
 	"github.com/iyear/tdl/pkg/kv"
+	tclientpkg "github.com/iyear/tdl/pkg/tclient"
+)
+
+const namespaceCheckTimeout = 15 * time.Second
+
+var (
+	errNamespaceUnauthorized = errors.New("namespace is not authorized")
+	errNamespaceNoSession    = errors.New("namespace has no session")
 )
 
 // NewTUI creates the `tdl tui` command: a fullscreen, mouse-interactive
@@ -20,26 +38,109 @@ func NewTUI() *cobra.Command {
 		Short:   "Interactive TUI for tdl (grok-build style)",
 		GroupID: groupTools.ID,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return tui.Run(execInTUI, listNamespaces())
+			stg := kv.From(cmd.Context())
+			namespaces, err := validNamespaces(cmd.Context(), stg)
+			if err != nil {
+				return err
+			}
+			return tui.Run(cmd.Context(), execInTUI, namespaces)
 		},
 	}
 }
 
-// listNamespaces reads logged-in namespaces from the kv storage so the TUI
-// can show which accounts are already available before any login. Read-only
-// and best-effort: the executor opens storage per command run, so this only
-// runs once at startup while storage is free.
+// validNamespaces checks every stored session before the TUI starts. Only
+// explicit authorization failures are removed; transient network failures
+// leave the namespace visible so a temporary outage cannot destroy a session.
+func validNamespaces(parent context.Context, stg kv.Storage) ([]string, error) {
+	ns, err := stg.Namespaces()
+	if err != nil {
+		return nil, errors.Wrap(err, "list namespaces")
+	}
+	sort.Strings(ns)
+
+	valid := make([]string, 0, len(ns))
+	for _, name := range ns {
+		ctx, cancel := context.WithTimeout(parent, namespaceCheckTimeout)
+		err := checkNamespace(ctx, stg, name)
+		cancel()
+		if errors.Is(err, errNamespaceUnauthorized) {
+			if removeErr := stg.RemoveNamespace(name); removeErr != nil {
+				return nil, errors.Wrapf(removeErr, "remove invalid namespace %q", name)
+			}
+			logctx.From(parent).Warn("Removed unauthorized namespace", zap.String("namespace", name))
+			continue
+		}
+		if errors.Is(err, errNamespaceNoSession) {
+			logctx.From(parent).Debug("Ignoring namespace without Telegram session", zap.String("namespace", name))
+			continue
+		}
+		if err != nil {
+			logctx.From(parent).Warn("Could not validate namespace; keeping it", zap.String("namespace", name), zap.Error(err))
+		}
+		valid = append(valid, name)
+	}
+	return valid, nil
+}
+
+func checkNamespace(ctx context.Context, stg kv.Storage, name string) error {
+	kvd, err := stg.Open(name)
+	if err != nil {
+		return errors.Wrap(err, "open namespace")
+	}
+	hasSession, err := storage.HasSession(ctx, kvd)
+	if err != nil {
+		return errors.Wrap(err, "check session")
+	}
+	if !hasSession {
+		return errNamespaceNoSession
+	}
+	client, err := tclientpkg.New(ctx, tclientpkg.Options{
+		KV:               kvd,
+		Proxy:            viper.GetString(consts.FlagProxy),
+		NTP:              viper.GetString(consts.FlagNTP),
+		ReconnectTimeout: viper.GetDuration(consts.FlagReconnectTimeout),
+	}, false)
+	if err != nil {
+		if isUnauthorizedNamespaceError(err) {
+			return errNamespaceUnauthorized
+		}
+		return errors.Wrap(err, "create telegram client")
+	}
+	return client.Run(ctx, func(ctx context.Context) error {
+		status, err := client.Auth().Status(ctx)
+		if err != nil {
+			if isUnauthorizedNamespaceError(err) {
+				return errNamespaceUnauthorized
+			}
+			return err
+		}
+		if !status.Authorized {
+			return errNamespaceUnauthorized
+		}
+		return nil
+	})
+}
+
+func isUnauthorizedNamespaceError(err error) bool {
+	return auth.IsUnauthorized(err) || tgerr.Is(err,
+		"AUTH_KEY_UNREGISTERED",
+		"SESSION_EXPIRED",
+		"AUTH_KEY_DUPLICATED",
+	)
+}
+
+// listNamespaces remains useful to callers that only need the stored names.
 func listNamespaces() []string {
 	stg, err := kv.NewWithMap(DefaultBoltStorage)
 	if err != nil {
 		return nil
 	}
 	defer func() { _ = stg.Close() }()
-
 	ns, err := stg.Namespaces()
 	if err != nil {
 		return nil
 	}
+	sort.Strings(ns)
 	return ns
 }
 
@@ -52,6 +153,9 @@ func listNamespaces() []string {
 // startup and is unaffected by the swap.
 func execInTUI(ctx context.Context, argv []string, out io.Writer) error {
 	oldStdout, oldStderr := os.Stdout, os.Stderr
+	defer func() {
+		os.Stdout, os.Stderr = oldStdout, oldStderr
+	}()
 
 	var f *os.File
 	if _, ok := out.(*os.File); ok {
@@ -83,8 +187,5 @@ func execInTUI(ctx context.Context, argv []string, out io.Writer) error {
 
 	err := root.ExecuteContext(ctx)
 
-	if f != nil {
-		os.Stdout, os.Stderr = oldStdout, oldStderr
-	}
 	return err
 }

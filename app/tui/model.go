@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ const (
 const maxScrollbackLines = 5000
 
 type model struct {
+	ctx     context.Context
 	program *tea.Program
 	exec    Executor
 
@@ -62,8 +64,23 @@ func newModel(exec Executor, namespaces []string) model {
 	sp.Style = stSpinner
 
 	set := loadSettings()
+	if len(namespaces) > 0 {
+		selected := false
+		for _, ns := range namespaces {
+			if ns == set.NS || (set.NS == "" && ns == "default") {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			set.NS = namespaces[0]
+		}
+	} else {
+		set.NS = ""
+	}
 
 	m := model{
+		ctx:        context.Background(),
 		exec:       exec,
 		lang:       Lang(set.Language),
 		set:        set,
@@ -79,9 +96,13 @@ func newModel(exec Executor, namespaces []string) model {
 
 // Run starts the TUI program. exec is injected from package cmd;
 // namespaces are the logged-in namespaces shown in the header.
-func Run(exec Executor, namespaces []string) error {
+func Run(ctx context.Context, exec Executor, namespaces []string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m := newModel(exec, namespaces)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	m.ctx = ctx
+	p := tea.NewProgram(&m, tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	m.program = p
 	_, err := p.Run()
 	return err
@@ -424,7 +445,7 @@ func (m model) launchAction(a *action) (tea.Model, tea.Cmd) {
 	m.live = ""
 	m.stopReq = false
 
-	m.cancelRun = startRun(m.program, m.exec, argv)
+	m.cancelRun = startRun(m.ctx, m.program, m.exec, argv)
 	return m, m.spinner.Tick
 }
 

@@ -116,6 +116,25 @@ func (b *bolt) Namespaces() ([]string, error) {
 	return namespaces, nil
 }
 
+func (b *bolt) RemoveNamespace(ns string) error {
+	if ns == "" {
+		return errors.New("namespace is required")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if db, ok := b.dbs[ns]; ok {
+		if err := db.Close(); err != nil {
+			return errors.Wrap(err, "close namespace")
+		}
+		delete(b.dbs, ns)
+	}
+	if err := os.Remove(filepath.Join(b.path, ns)); err != nil && !os.IsNotExist(err) {
+		return errors.Wrap(err, "remove namespace")
+	}
+	return nil
+}
+
 func (b *bolt) walk(fn func(path string) error) error {
 	return filepath.Walk(b.path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {

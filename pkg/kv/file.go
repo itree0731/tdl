@@ -86,6 +86,18 @@ func (f *file) Namespaces() ([]string, error) {
 	return namespaces, nil
 }
 
+func (f *file) RemoveNamespace(ns string) error {
+	if ns == "" {
+		return errors.New("namespace is required")
+	}
+	m, err := f.read()
+	if err != nil {
+		return errors.Wrap(err, "read")
+	}
+	delete(m, ns)
+	return f.write(m)
+}
+
 func (f *file) Open(ns string) (storage.Storage, error) {
 	if ns == "" {
 		return nil, errors.New("namespace is required")

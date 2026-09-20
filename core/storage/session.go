@@ -37,6 +37,24 @@ func (s *Session) StoreSession(ctx context.Context, data []byte) error {
 	return s.kv.Set(ctx, s.key(), data)
 }
 
+func HasSession(ctx context.Context, kv Storage) (bool, error) {
+	return (&Session{kv: kv}).HasSession(ctx)
+}
+
+func (s *Session) HasSession(ctx context.Context) (bool, error) {
+	if s.login {
+		return false, nil
+	}
+	_, err := s.kv.Get(ctx, s.key())
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Session) key() string {
 	return keygen.New("session")
 }

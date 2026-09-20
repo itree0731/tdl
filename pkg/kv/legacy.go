@@ -108,6 +108,15 @@ func (l *legacy) Open(ns string) (storage.Storage, error) {
 	return l.open(ns)
 }
 
+func (l *legacy) RemoveNamespace(ns string) error {
+	if ns == "" {
+		return errors.New("namespace is required")
+	}
+	return l.bolt.Update(func(tx *bbolt.Tx) error {
+		return tx.DeleteBucket([]byte(ns))
+	})
+}
+
 func (l *legacy) open(ns string) (*legacyKV, error) {
 	if ns == "" {
 		return nil, errors.New("namespace is required")

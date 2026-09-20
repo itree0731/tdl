@@ -24,6 +24,7 @@ type Storage interface {
 	MigrateTo() (Meta, error)
 	MigrateFrom(Meta) error
 	Namespaces() ([]string, error)
+	RemoveNamespace(ns string) error
 	Open(ns string) (storage.Storage, error)
 	io.Closer
 }

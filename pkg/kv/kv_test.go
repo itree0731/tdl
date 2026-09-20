@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/iyear/tdl/core/storage"
 )
 
 func forEachStorage(t *testing.T, fn func(e Storage, t *testing.T)) {
@@ -121,6 +123,28 @@ func TestStorage_MigrateTo(t *testing.T) {
 		m, err := e.MigrateTo()
 		assert.NoError(t, err)
 		assert.Equal(t, meta, m)
+	})
+}
+
+func TestStorage_RemoveNamespace(t *testing.T) {
+	forEachStorage(t, func(e Storage, t *testing.T) {
+		for _, ns := range []string{"keep", "remove"} {
+			kv, err := e.Open(ns)
+			require.NoError(t, err)
+			require.NoError(t, kv.Set(context.Background(), "session", []byte(ns)))
+		}
+
+		require.NoError(t, e.RemoveNamespace("remove"))
+		ns, err := e.Namespaces()
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"keep"}, ns)
+
+		_, err = e.Open("remove")
+		require.NoError(t, err) // Open creates a fresh namespace after deletion.
+		fresh, err := e.Open("remove")
+		require.NoError(t, err)
+		_, err = fresh.Get(context.Background(), "session")
+		require.ErrorIs(t, err, storage.ErrNotFound)
 	})
 }
 
