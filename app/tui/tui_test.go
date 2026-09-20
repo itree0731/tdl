@@ -308,6 +308,25 @@ func TestLoginActionGivesGuidance(t *testing.T) {
 		t.Fatalf("guidance line = %q", last)
 	}
 }
+func TestExtraFieldFocusDoesNotPanic(t *testing.T) {
+	m := newModel(stubExec, nil)
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = asModel(mm)
+	m.menuIx = indexOfAction(m, "dl")
+	mm, _ = m.openMenuItem(m.menuIx)
+	m = asModel(mm)
+
+	for i := 0; i < len(m.form.fields)-1; i++ {
+		mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = asModel(mm)
+	}
+	if m.formIx != len(m.form.fields)-1 {
+		t.Fatalf("formIx = %d, want %d", m.formIx, len(m.form.fields)-1)
+	}
+	if !m.form.fields[m.formIx].ti.Focused() {
+		t.Fatal("extra args field is not focused")
+	}
+}
 
 // Header account chips: click one to switch the namespace every command
 // runs under; inert while a command is executing.

@@ -51,9 +51,9 @@ func choiceField(labelKey, flag string, choices []string) field {
 }
 
 func extraField() field {
-	f := field{kind: kExtra, labelKey: "form.extra", flag: ""}
-	f.ti.Placeholder = "--takeout --limit 4"
-	return f
+	ti := textinput.New()
+	ti.Placeholder = "--takeout --limit 4"
+	return field{kind: kExtra, labelKey: "form.extra", flag: "", ti: ti}
 }
 
 func (f *field) value() string {
