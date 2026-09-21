@@ -17,12 +17,13 @@ const (
 )
 
 type field struct {
-	kind     kind
-	labelKey string // i18n key, or plain text when it contains no dot
-	helpKey  string
-	flag     string
-	def      string // text default: value == def means "use tdl's own default"
-	choices  []string
+	kind        kind
+	labelKey    string // i18n key, or plain text when it contains no dot
+	helpKey     string
+	placeholder string
+	flag        string
+	def         string // text default: value == def means "use tdl's own default"
+	choices     []string
 
 	ti       textinput.Model
 	boolVal  bool
@@ -37,31 +38,34 @@ func (f *field) label(l Lang) string {
 }
 
 func (f *field) help(l Lang) string {
-	if f.helpKey == "" {
-		return ""
+	if h, ok := fieldHelp[f.helpKey]; ok {
+		if l == LangZh {
+			return h[1]
+		}
+		return h[0]
 	}
-	return l.t(f.helpKey)
+	return l.t("form.extra.desc")
 }
 
 func textField(labelKey, flag, def, ph string) field {
 	ti := textinput.New()
 	ti.Placeholder = ph
 	ti.SetValue(def)
-	return field{kind: kText, labelKey: labelKey, flag: flag, def: def, ti: ti}
+	return field{kind: kText, labelKey: labelKey, helpKey: labelKey, placeholder: ph, flag: flag, def: def, ti: ti}
 }
 
 func boolField(labelKey, flag string) field {
-	return field{kind: kBool, labelKey: labelKey, flag: flag}
+	return field{kind: kBool, labelKey: labelKey, helpKey: labelKey, flag: flag}
 }
 
 func choiceField(labelKey, flag string, choices []string) field {
-	return field{kind: kChoice, labelKey: labelKey, flag: flag, choices: choices}
+	return field{kind: kChoice, labelKey: labelKey, helpKey: labelKey, flag: flag, choices: choices}
 }
 
 func extraField() field {
 	ti := textinput.New()
 	ti.Placeholder = "--takeout --limit 4"
-	return field{kind: kExtra, labelKey: "form.extra", flag: "", ti: ti}
+	return field{kind: kExtra, labelKey: "form.extra", helpKey: "form.extra", placeholder: ti.Placeholder, flag: "", ti: ti}
 }
 
 func (f *field) value() string {
@@ -165,6 +169,7 @@ func newActions() []action {
 				textField("Exclude ext", "-e", "", "png,jpg"),
 				boolField("Remove after upload", "--rm"),
 				boolField("As photo", "--photo"),
+				boolField("Disable auto thumbnail", "--no-auto-thumb"),
 				extraField(),
 			},
 		},
@@ -172,7 +177,7 @@ func newActions() []action {
 			id: "chatls", titleKey: "menu.chatls", descKey: "menu.chatls.desc",
 			base: []string{"chat", "ls"},
 			fields: []field{
-				choiceField("Output", "-o", []string{"", "json", "csv", "table"}),
+				choiceField("Output", "-o", []string{"", "json", "table"}),
 				textField("Filter expr", "-f", "", "true"),
 			},
 		},

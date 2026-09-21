@@ -3,6 +3,8 @@ package tui
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -22,6 +24,11 @@ type progressMsg struct {
 	event xprogress.Event
 }
 
+type progressSnapshotMsg struct {
+	runID    uint64
+	snapshot xprogress.Snapshot
+}
+
 type outputLineMsg struct {
 	runID uint64
 	text  string
@@ -31,9 +38,10 @@ type liveLineMsg struct {
 	text  string
 } // legacy live output, kept in details only
 type runDoneMsg struct {
-	runID   uint64
-	err     error
-	elapsed time.Duration
+	runID    uint64
+	err      error
+	elapsed  time.Duration
+	snapshot *xprogress.Snapshot
 }
 
 // startRun launches argv in the background and streams its output into the
@@ -64,14 +72,34 @@ func startRun(parent context.Context, p *tea.Program, exec Executor, argv []stri
 		}
 		defer pr.Close()
 
-		childCtx := xprogress.WithSink(ctx, xprogress.SinkFunc(func(event xprogress.Event) {
-			send(progressMsg{runID: runID, event: event})
-		}))
+		collector := xprogress.NewCollector()
+		childCtx := xprogress.WithSink(ctx, collector)
+		updatesDone := make(chan struct{})
+		updatesExited := make(chan struct{})
+		go func() {
+			defer close(updatesExited)
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-updatesDone:
+					return
+				case <-ticker.C:
+					send(progressSnapshotMsg{runID: runID, snapshot: collector.Snapshot()})
+				}
+			}
+		}()
 		result := make(chan error, 1)
 		go func() {
-			err := exec(childCtx, argv, pw)
-			_ = pw.Close() // unblocks the reader below
-			result <- err
+			var runErr error
+			defer func() {
+				if r := recover(); r != nil {
+					runErr = fmt.Errorf("command panic: %v", r)
+				}
+				_ = pw.Close()
+				result <- runErr
+			}()
+			runErr = exec(childCtx, argv, pw)
 		}()
 
 		buf := make([]byte, 0, 8192)
@@ -98,7 +126,13 @@ func startRun(parent context.Context, p *tea.Program, exec Executor, argv []stri
 		}
 
 		runErr := <-result
-		send(runDoneMsg{runID: runID, err: runErr, elapsed: time.Since(start)})
+		if ctx.Err() != nil && !errors.Is(runErr, ctx.Err()) {
+			runErr = errors.Join(runErr, ctx.Err())
+		}
+		close(updatesDone)
+		<-updatesExited
+		snapshot := collector.FinishContext(ctx, runErr)
+		send(runDoneMsg{runID: runID, err: runErr, elapsed: time.Since(start), snapshot: &snapshot})
 	}()
 
 	return cancel

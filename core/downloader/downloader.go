@@ -5,8 +5,8 @@ import (
 
 	"github.com/go-faster/errors"
 	"github.com/gotd/td/telegram/downloader"
+	"github.com/iyear/tdl/core/transfer"
 	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/iyear/tdl/core/dcpool"
 	"github.com/iyear/tdl/core/logctx"
@@ -34,46 +34,26 @@ func New(opts Options) *Downloader {
 }
 
 func (d *Downloader) Download(ctx context.Context, limit int) error {
-	wg, wgctx := errgroup.WithContext(ctx)
-	wg.SetLimit(limit)
-
-	for d.opts.Iter.Next(wgctx) {
+	return transfer.Run(ctx, limit, d.opts.Iter.Next, func() Elem {
 		elem := d.opts.Iter.Value()
-
-		wg.Go(func() (rerr error) {
+		if q, ok := d.opts.Progress.(interface{ OnQueued(Elem) }); ok {
+			q.OnQueued(elem)
+		}
+		return elem
+	}, d.opts.Iter.Err,
+		func(workCtx context.Context, elem Elem) error {
 			d.opts.Progress.OnAdd(elem)
-
-			var derr error
-			defer func() { d.opts.Progress.OnDone(elem, derr) }()
-
-			derr = d.download(wgctx, elem)
-			if derr != nil {
-				// canceled by user, so we directly return error to stop all
-				if errors.Is(derr, context.Canceled) {
-					return errors.Wrap(derr, "download")
-				}
-
-				// don't fail the whole group, just log it,
-				// but the error must reach OnDone so progress
-				// doesn't finalize a partial file as complete
-				logctx.
-					From(ctx).
-					Error("Download error",
-						zap.Any("element", elem),
-						zap.Error(derr),
-					)
+			err := d.download(workCtx, elem)
+			if finalizer, ok := d.opts.Progress.(Completion); ok {
+				return finalizer.Finalize(elem, err)
 			}
-
-			return nil
+			d.opts.Progress.OnDone(elem, err)
+			return err
+		}, func() {
+			if observer, ok := d.opts.Progress.(interface{ OnDiscoveryDone() }); ok {
+				observer.OnDiscoveryDone()
+			}
 		})
-	}
-
-	if err := d.opts.Iter.Err(); err != nil {
-		wg.Wait() // let in-flight goroutines settle before the caller tears down connections
-		return errors.Wrap(err, "iter")
-	}
-
-	return wg.Wait()
 }
 
 func (d *Downloader) download(ctx context.Context, elem Elem) error {

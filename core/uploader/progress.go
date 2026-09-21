@@ -30,3 +30,8 @@ func (p *wrapProcess) Chunk(_ context.Context, state uploader.ProgressState) err
 	})
 	return nil
 }
+
+// Completion optionally reports errors from closing and finalizing a transfer.
+type Completion interface {
+	Finalize(elem Elem, err error) error
+}

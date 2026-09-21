@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/go-faster/errors"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/tgerr"
@@ -153,8 +154,11 @@ func listNamespaces() []string {
 // startup and is unaffected by the swap.
 func execInTUI(ctx context.Context, argv []string, out io.Writer) error {
 	oldStdout, oldStderr := os.Stdout, os.Stderr
+	oldColorOutput, oldColorError := color.Output, color.Error
+	color.Output, color.Error = out, out
 	defer func() {
 		os.Stdout, os.Stderr = oldStdout, oldStderr
+		color.Output, color.Error = oldColorOutput, oldColorError
 	}()
 
 	var f *os.File

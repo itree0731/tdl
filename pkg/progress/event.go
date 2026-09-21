@@ -17,15 +17,22 @@ const (
 type Kind string
 
 const (
-	KindStarted  Kind = "started"
-	KindUpdated  Kind = "updated"
-	KindFinished Kind = "finished"
+	KindTelemetry     Kind = "telemetry"
+	KindQueued        Kind = "queued"
+	KindDiscoveryDone Kind = "discovery_done"
+	KindSkipped       Kind = "skipped"
+	KindStarted       Kind = "started"
+	KindUpdated       Kind = "updated"
+	KindFinished      Kind = "finished"
 )
 
 // Status is the task state represented by an event.
 type Status string
 
 const (
+	StatusQueued   Status = "queued"
+	StatusPartial  Status = "partial_failure"
+	StatusSkipped  Status = "skipped"
 	StatusRunning  Status = "running"
 	StatusDone     Status = "done"
 	StatusFailed   Status = "failed"
@@ -47,6 +54,9 @@ type Event struct {
 	TotalBytes     int64
 	At             time.Time
 	Err            string
+	Phase          string
+	Info           string
+	Sequence       uint64
 }
 
 // Sink receives structured transfer events.
@@ -68,4 +78,14 @@ func Emit(ctx context.Context, event Event) {
 	if sink, ok := ctx.Value(sinkKey{}).(Sink); ok && sink != nil {
 		sink.Emit(event)
 	}
+}
+
+func HasSink(ctx context.Context) bool {
+	sink, ok := ctx.Value(sinkKey{}).(Sink)
+	return ok && sink != nil
+}
+
+// Skip records a filtered, missing, or previously completed input separately.
+func Skip(ctx context.Context, id, name string) {
+	Emit(ctx, Event{Kind: KindSkipped, Status: StatusSkipped, TaskID: "skip:" + id, FileName: name, At: time.Now()})
 }

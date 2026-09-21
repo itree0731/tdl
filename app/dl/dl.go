@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
@@ -21,9 +23,8 @@ import (
 	"github.com/iyear/tdl/core/tclient"
 	"github.com/iyear/tdl/pkg/consts"
 	"github.com/iyear/tdl/pkg/key"
-	"github.com/iyear/tdl/pkg/prog"
+	xprogress "github.com/iyear/tdl/pkg/progress"
 	"github.com/iyear/tdl/pkg/tmessage"
-	"github.com/iyear/tdl/pkg/utils"
 )
 
 type Options struct {
@@ -53,6 +54,8 @@ type parser struct {
 }
 
 func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Options) (rerr error) {
+	finishProgress := func(error) {}
+	defer func() { finishProgress(rerr) }()
 	pool := dcpool.NewPool(c,
 		int64(viper.GetInt(consts.FlagPoolSize)),
 		tclient.NewDefaultMiddlewares(ctx, viper.GetDuration(consts.FlagReconnectTimeout))...)
@@ -89,25 +92,23 @@ func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Opti
 		color.Yellow("Restart download by 'restart' flag")
 	}
 
-	defer func() { // save progress
+	defer func() { // preserve checkpoints even when the transfer context was canceled
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
 		if rerr != nil { // download is interrupted
-			multierr.AppendInto(&rerr, saveProgress(ctx, kvd, it))
+			multierr.AppendInto(&rerr, saveProgress(cleanupCtx, kvd, it))
 		} else { // if finished, we should clear resume key
-			multierr.AppendInto(&rerr, kvd.Delete(ctx, key.Resume(it.Fingerprint())))
+			multierr.AppendInto(&rerr, kvd.Delete(cleanupCtx, key.Resume(it.Fingerprint())))
 		}
 	}()
 
-	dlProgress := prog.New(utils.Byte.FormatBinaryBytes)
-	dlProgress.SetNumTrackersExpected(it.Total())
-	if !viper.GetBool(consts.FlagDisableProgressPS) {
-		prog.EnablePS(ctx, dlProgress)
-	}
+	ctx, finishProgress = xprogress.StartCLI(ctx, os.Stderr, !viper.GetBool(consts.FlagDisableProgressPS))
 
 	options := downloader.Options{
 		Pool:     pool,
 		Threads:  viper.GetInt(consts.FlagThreads),
 		Iter:     it,
-		Progress: newProgress(ctx, dlProgress, it, opts),
+		Progress: newProgress(ctx, it, opts),
 	}
 	limit := viper.GetInt(consts.FlagLimit)
 
@@ -120,9 +121,7 @@ func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Opti
 
 	color.Green("All files will be downloaded to '%s' dir", opts.Dir)
 
-	go dlProgress.Render()
 	defer func() {
-		prog.Wait(ctx, dlProgress)
 
 		// Notify user if any messages were skipped due to deletion
 		// This is deferred to ensure it shows after progress rendering completes

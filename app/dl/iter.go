@@ -27,6 +27,7 @@ import (
 	"github.com/iyear/tdl/core/util/fsutil"
 	"github.com/iyear/tdl/core/util/tutil"
 	"github.com/iyear/tdl/pkg/filterMap"
+	xprogress "github.com/iyear/tdl/pkg/progress"
 	"github.com/iyear/tdl/pkg/tmessage"
 	"github.com/iyear/tdl/pkg/tplfunc"
 	"github.com/iyear/tdl/pkg/utils"
@@ -136,7 +137,14 @@ func (i *iter) Next(ctx context.Context) bool {
 
 	// if delay is set, sleep for a while for each iteration
 	if i.delay > 0 && (i.dialogIndex+i.messageIndex) > 0 { // skip first delay
-		time.Sleep(i.delay)
+		timer := time.NewTimer(i.delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			i.err = ctx.Err()
+			return false
+		case <-timer.C:
+		}
 	}
 
 	if len(i.elem) > 0 { // there are messages(grouped) in channel that not processed
@@ -203,6 +211,7 @@ func (i *iter) process(ctx context.Context) (ret bool, skip bool) {
 				zap.Int64("dialog_id", tutil.GetInputPeerID(peer)),
 				zap.Int("message_id", msg),
 			)
+			xprogress.Skip(ctx, fmt.Sprintf("%d/%d", tutil.GetInputPeerID(peer), msg), "deleted message")
 			i.skippedDeleted.Inc()                                                                     // increment skipped deleted counter
 			i.deletedIDs = append(i.deletedIDs, fmt.Sprintf("%d/%d", tutil.GetInputPeerID(peer), msg)) // track deleted message ID
 			i.logicalPos++                                                                             // increment logical position for skipped message
@@ -218,6 +227,7 @@ func (i *iter) process(ctx context.Context) (ret bool, skip bool) {
 
 	// check if finished
 	if _, ok := i.finished[startLogicalPos]; ok {
+		xprogress.Skip(ctx, fmt.Sprintf("%d/%d", from.ID(), message.ID), "previously completed")
 		i.logicalPos++ // increment logical position even if skipped
 		return false, true
 	}
@@ -235,15 +245,18 @@ func (i *iter) processSingle(ctx context.Context, message *tg.Message, from peer
 			zap.Int("message_id", message.ID),
 		)
 
+		xprogress.Skip(ctx, fmt.Sprintf("%d/%d", from.ID(), message.ID), "filtered or existing media")
 		return false, true
 	}
 
 	// process include and exclude
 	ext := filepath.Ext(item.Name)
 	if _, ok = i.include[ext]; len(i.include) > 0 && !ok {
+		xprogress.Skip(ctx, fmt.Sprintf("%d/%d", from.ID(), message.ID), "filtered or existing media")
 		return false, true
 	}
 	if _, ok = i.exclude[ext]; len(i.exclude) > 0 && ok {
+		xprogress.Skip(ctx, fmt.Sprintf("%d/%d", from.ID(), message.ID), "filtered or existing media")
 		return false, true
 	}
 
@@ -266,6 +279,7 @@ func (i *iter) processSingle(ctx context.Context, message *tg.Message, from peer
 		if stat, err := os.Stat(filepath.Join(i.opts.Dir, toName.String())); err == nil {
 			if fsutil.GetNameWithoutExt(toName.String()) == fsutil.GetNameWithoutExt(stat.Name()) &&
 				stat.Size() == item.Size {
+				xprogress.Skip(ctx, fmt.Sprintf("%d/%d", from.ID(), message.ID), "filtered or existing media")
 				return false, true
 			}
 		}
@@ -327,6 +341,7 @@ func (i *iter) processGrouped(ctx context.Context, message *tg.Message, from pee
 
 		// check if this grouped message is already finished
 		if _, ok := i.finished[logicalPos]; ok {
+			xprogress.Skip(ctx, fmt.Sprintf("%d/%d", from.ID(), msg.ID), "previously completed")
 			continue
 		}
 

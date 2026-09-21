@@ -111,6 +111,7 @@ func TestQuoteJoin(t *testing.T) {
 }
 
 func TestModelFlow(t *testing.T) {
+	isolateSettings(t)
 	// exec runs on a goroutine started by startRun: the argv must cross
 	// goroutines through a channel, not a shared variable
 	argvCh := make(chan []string, 1)
@@ -252,6 +253,7 @@ func indexOfAction(m model, id string) int {
 // An exec that ignores cancellation must never trap the user: the first
 // ctrl+c stops the run, the second force quits the program.
 func TestCtrlCForceQuitWhileRunning(t *testing.T) {
+	isolateSettings(t)
 	cancelled := make(chan struct{})
 	exec := func(ctx context.Context, argv []string, out io.Writer) error {
 		<-ctx.Done()
@@ -291,6 +293,7 @@ func TestCtrlCForceQuitWhileRunning(t *testing.T) {
 
 // login prompts on the console the TUI owns; it must not launch in-process.
 func TestLoginActionGivesGuidance(t *testing.T) {
+	isolateSettings(t)
 	exec := func(ctx context.Context, argv []string, out io.Writer) error {
 		t.Error("login must not be executed in-process")
 		return nil
@@ -311,6 +314,7 @@ func TestLoginActionGivesGuidance(t *testing.T) {
 }
 
 func TestOldRunMessagesAreIgnored(t *testing.T) {
+	isolateSettings(t)
 	m := newModel(stubExec, nil)
 	m.runID = 2
 	m.running = true
@@ -328,6 +332,7 @@ func TestOldRunMessagesAreIgnored(t *testing.T) {
 }
 
 func TestSettingsApplyStaysOpen(t *testing.T) {
+	isolateSettings(t)
 	m := newModel(stubExec, nil)
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = asModel(mm)
@@ -346,6 +351,7 @@ func TestSettingsApplyStaysOpen(t *testing.T) {
 }
 
 func TestExtraFieldFocusDoesNotPanic(t *testing.T) {
+	isolateSettings(t)
 	m := newModel(stubExec, nil)
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = asModel(mm)
@@ -368,6 +374,7 @@ func TestExtraFieldFocusDoesNotPanic(t *testing.T) {
 // Header account chips: click one to switch the namespace every command
 // runs under; inert while a command is executing.
 func TestAccountChipSwitch(t *testing.T) {
+	isolateSettings(t)
 	original := loadSettings()
 	_ = saveSettings(settings{Language: string(LangEn), NS: "default"})
 	defer func() { _ = saveSettings(original) }()

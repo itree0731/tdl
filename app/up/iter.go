@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/expr-lang/expr/vm"
-	"github.com/gabriel-vasile/mimetype"
 	"github.com/go-faster/errors"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/gotd/td/telegram/message/entity"
@@ -15,7 +14,6 @@ import (
 	"github.com/gotd/td/telegram/peers"
 
 	"github.com/iyear/tdl/core/uploader"
-	"github.com/iyear/tdl/core/util/mediautil"
 	"github.com/iyear/tdl/core/util/tutil"
 	"github.com/iyear/tdl/pkg/texpr"
 )
@@ -31,32 +29,34 @@ type dest struct {
 }
 
 type iter struct {
-	files   []*File
-	to      *vm.Program
-	caption *vm.Program
-	chat    string
-	topic   int
-	photo   bool
-	remove  bool
-	delay   time.Duration
-	manager *peers.Manager
+	files       []*File
+	to          *vm.Program
+	caption     *vm.Program
+	chat        string
+	topic       int
+	photo       bool
+	remove      bool
+	noAutoThumb bool
+	delay       time.Duration
+	manager     *peers.Manager
 
 	cur  int
 	err  error
 	file uploader.Elem
 }
 
-func newIter(files []*File, to, caption *vm.Program, chat string, topic int, photo, remove bool, delay time.Duration, manager *peers.Manager) *iter {
+func newIter(files []*File, to, caption *vm.Program, chat string, topic int, photo, remove, noAutoThumb bool, delay time.Duration, manager *peers.Manager) *iter {
 	return &iter{
-		files:   files,
-		to:      to,
-		caption: caption,
-		chat:    chat,
-		topic:   topic,
-		photo:   photo,
-		remove:  remove,
-		delay:   delay,
-		manager: manager,
+		files:       files,
+		to:          to,
+		caption:     caption,
+		chat:        chat,
+		topic:       topic,
+		photo:       photo,
+		remove:      remove,
+		noAutoThumb: noAutoThumb,
+		delay:       delay,
+		manager:     manager,
 
 		cur:  0,
 		err:  nil,
@@ -78,7 +78,14 @@ func (i *iter) Next(ctx context.Context) bool {
 
 	// if delay is set, sleep for a while for each iteration
 	if i.delay > 0 && i.cur > 0 { // skip first delay
-		time.Sleep(i.delay)
+		timer := time.NewTimer(i.delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			i.err = ctx.Err()
+			return false
+		case <-timer.C:
+		}
 	}
 
 	cur := i.files[i.cur]
@@ -99,6 +106,23 @@ func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve file")
 	}
+	var (
+		thumb          *uploaderFile
+		temporaryThumb string
+		keepFiles      bool
+	)
+	defer func() {
+		if keepFiles {
+			return
+		}
+		_ = file.Close()
+		if thumb != nil {
+			_ = thumb.Close()
+		}
+		if temporaryThumb != "" {
+			_ = os.Remove(temporaryThumb)
+		}
+	}()
 
 	env := exprEnv(ctx, cur)
 
@@ -112,11 +136,28 @@ func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
 		return nil, errors.Wrap(err, "resolve caption")
 	}
 
-	thumb, err := i.resolveThumb(cur.Thumb)
+	thumbPath, temporary, err := prepareThumbnail(ctx, cur.File, cur.Thumb, i.noAutoThumb)
+	if err != nil {
+		keepFiles = true
+		return &iterElem{
+			file:           file,
+			to:             to,
+			caption:        caption,
+			thread:         thread,
+			asPhoto:        i.photo,
+			remove:         i.remove,
+			preparationErr: errors.Wrap(err, "prepare thumbnail"),
+		}, nil
+	}
+	if temporary {
+		temporaryThumb = thumbPath
+	}
+	thumb, err = i.resolveThumb(thumbPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve thumbnail")
 	}
 
+	keepFiles = true
 	return &iterElem{
 		file:    file,
 		thumb:   thumb,
@@ -124,8 +165,9 @@ func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
 		caption: caption,
 		thread:  thread,
 
-		asPhoto: i.photo,
-		remove:  i.remove,
+		asPhoto:        i.photo,
+		remove:         i.remove,
+		temporaryThumb: temporaryThumb,
 	}, nil
 }
 
@@ -231,9 +273,7 @@ func (i *iter) resolveThumb(path string) (*uploaderFile, error) {
 		return nil, nil
 	}
 
-	// has thumbnail
-	mime, err := mimetype.DetectFile(path)
-	if err != nil || !mediautil.IsImage(mime.String()) { // TODO(iyear): jpg only
+	if err := validateThumbnail(path); err != nil {
 		return nil, errors.Wrapf(err, "invalid thumbnail file: %v", path)
 	}
 
@@ -241,10 +281,15 @@ func (i *iter) resolveThumb(path string) (*uploaderFile, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "open thumbnail file")
 	}
+	info, err := thumb.Stat()
+	if err != nil {
+		_ = thumb.Close()
+		return nil, errors.Wrap(err, "stat thumbnail file")
+	}
 
 	return &uploaderFile{
 		File: thumb,
-		size: 0,
+		size: info.Size(),
 	}, nil
 }
 

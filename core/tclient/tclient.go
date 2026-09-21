@@ -2,6 +2,7 @@ package tclient
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -107,7 +108,7 @@ func newBackoff(timeout time.Duration) backoff.BackOff {
 }
 
 func RunWithAuth(ctx context.Context, client *telegram.Client, f func(ctx context.Context) error) error {
-	return client.Run(ctx, func(ctx context.Context) error {
+	return runPreservingError(ctx, client.Run, func(ctx context.Context) error {
 		status, err := client.Auth().Status(ctx)
 		if err != nil {
 			return err
@@ -118,4 +119,22 @@ func RunWithAuth(ctx context.Context, client *telegram.Client, f func(ctx contex
 
 		return f(ctx)
 	})
+}
+
+// Some client runners normalize context.Canceled to nil. Preserve the callback
+// result so a canceled or partially failed batch cannot become a successful CLI exit.
+func runPreservingError(ctx context.Context, run func(context.Context, func(context.Context) error) error, f func(context.Context) error) error {
+	result := make(chan error, 1)
+	err := run(ctx, func(child context.Context) error { callbackErr := f(child); result <- callbackErr; return callbackErr })
+	select {
+	case callbackErr := <-result:
+		if callbackErr != nil && !stderrors.Is(err, callbackErr) {
+			err = stderrors.Join(err, callbackErr)
+		}
+	default:
+	}
+	if ctx.Err() != nil && !stderrors.Is(err, ctx.Err()) {
+		err = stderrors.Join(err, ctx.Err())
+	}
+	return err
 }

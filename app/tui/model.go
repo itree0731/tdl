@@ -2,33 +2,15 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	xprogress "github.com/iyear/tdl/pkg/progress"
 )
-
-type progressSnapshot struct {
-	direction   xprogress.Direction
-	currentFile string
-	completed   int64
-	total       int64
-	tasksTotal  int
-	tasksDone   int
-	status      xprogress.Status
-	lastError   string
-	items       map[string]xprogress.Event
-	startedAt   time.Time
-	lastAt      time.Time
-	lastBytes   int64
-	speed       float64
-}
 
 type state int
 
@@ -54,26 +36,29 @@ type model struct {
 	menuIx  int
 
 	// form state (also used for settings)
-	form           *action
-	formIx         int
-	isSetting      bool
-	settingsBase   settings
-	settingsDirty  bool
-	settingsPrompt bool
-
-	spinner     spinner.Model
-	running     bool
-	showOutput  bool
-	runErr      error
-	runLabel    string
-	runStart    time.Time
-	runLast     time.Duration
-	progress    progressSnapshot
-	runID       uint64
-	detailsOpen bool
-	live        string
-	stopReq     bool // ctrl+c pressed once already: next one force quits
-	cancelRun   func()
+	form              *action
+	formIx            int
+	isSetting         bool
+	settingsBase      settings
+	settingsDirty     bool
+	settingsPrompt    bool
+	settingsQuit      bool
+	settingsError     string
+	settingsButton    int
+	running           bool
+	showOutput        bool
+	runErr            error
+	runLabel          string
+	runCommand        string
+	runStart          time.Time
+	runLast           time.Duration
+	progress          xprogress.Snapshot
+	progressCollector *xprogress.Collector
+	runID             uint64
+	detailsOpen       bool
+	live              string
+	stopReq           bool // ctrl+c pressed once already: next one force quits
+	cancelRun         func()
 
 	vp     viewport.Model
 	follow bool
@@ -84,10 +69,6 @@ type model struct {
 }
 
 func newModel(exec Executor, namespaces []string) model {
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = stSpinner
-
 	set := loadSettings()
 	if len(namespaces) > 0 {
 		selected := false
@@ -112,7 +93,6 @@ func newModel(exec Executor, namespaces []string) model {
 		namespaces: namespaces,
 		hasSession: len(namespaces) > 0,
 		actions:    newActions(),
-		spinner:    sp,
 		vp:         viewport.New(0, 0),
 		follow:     true,
 	}
@@ -133,7 +113,7 @@ func Run(ctx context.Context, exec Executor, namespaces []string) error {
 	return err
 }
 
-func (m model) Init() tea.Cmd { return m.spinner.Tick }
+func (m model) Init() tea.Cmd { return nil }
 
 // ---------------------------------------------------------------------------
 // settings form
@@ -144,13 +124,16 @@ func (m *model) openSettings() {
 		langIx = 1
 	}
 	m.settingsBase = m.set
+	m.settingsError = ""
+	m.settingsQuit = false
+	m.settingsButton = -1
 	m.settingsDirty = false
 	m.settingsPrompt = false
 	m.form = &action{
 		id:       "settings",
 		titleKey: "menu.settings",
 		fields: []field{
-			{kind: kChoice, labelKey: "set.language", choices: []string{"en", "zh"}, choiceIx: langIx},
+			{kind: kChoice, labelKey: "set.language", helpKey: "set.language", choices: []string{"en", "zh"}, choiceIx: langIx},
 			textField("set.ns", "--ns", m.set.NS, "default"),
 			textField("set.proxy", "--proxy", m.set.Proxy, "protocol://host:port"),
 			textField("set.threads", "--threads", m.set.Threads, "4"),
@@ -162,24 +145,31 @@ func (m *model) openSettings() {
 	m.focusFormField(0)
 }
 
-func (m *model) applySettingsDraft() {
+func (m *model) applySettingsDraft() bool {
 	f := m.form.fields
-	m.lang = Lang(f[0].choices[f[0].choiceIx])
-	m.set.Language = string(m.lang)
-	m.set.NS = f[1].value()
-	m.set.Proxy = f[2].value()
-	m.set.Threads = f[3].value()
-	m.set.Limit = f[4].value()
-	_ = saveSettings(m.set)
-	m.settingsBase = m.set
+	candidate := settings{Language: f[0].choices[f[0].choiceIx], NS: f[1].value(), Proxy: f[2].value(), Threads: f[3].value(), Limit: f[4].value()}
+	if err := validateSettings(candidate); err != nil {
+		m.settingsError = err.Error()
+		m.updateSettingsDirty()
+		return false
+	}
+	if err := saveSettings(candidate); err != nil {
+		m.settingsError = err.Error()
+		m.updateSettingsDirty()
+		return false
+	}
+	m.set = candidate
+	m.lang = Lang(candidate.Language)
+	m.settingsBase = candidate
 	m.settingsDirty = false
+	m.settingsError = ""
+	return true
 }
 
 func (m *model) discardSettingsDraft() {
 	m.set = m.settingsBase
 	m.lang = Lang(m.set.Language)
-	m.form = nil
-	m.isSetting = false
+	m.toMenu()
 	m.settingsDirty = false
 	m.settingsPrompt = false
 }
@@ -224,6 +214,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		w := m.width - 4 // prompt box padding+border
 		m.vp.Width = m.width
 		m.vp.Height = m.mainHeight()
+		if m.state() == stateRun {
+			m.renderViewport()
+		}
 		if m.form != nil {
 			for i := range m.form.fields {
 				m.form.fields[i].ti.Width = w - 24
@@ -234,16 +227,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case spinner.TickMsg:
-		if !m.running {
-			return m, nil
+	case progressSnapshotMsg:
+		if msg.runID == m.runID && m.running {
+			m.progress = msg.snapshot
+			m.renderViewport()
 		}
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-
+		return m, nil
 	case progressMsg:
-		if msg.runID != m.runID {
+		if msg.runID != m.runID || !m.running {
 			return m, nil
 		}
 		m.applyProgress(msg.event)
@@ -272,18 +263,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runLast = msg.elapsed
 		m.live = ""
 		m.stopReq = false
-		m.progress.status = xprogress.StatusDone
-		if msg.err != nil {
-			m.progress.status = xprogress.StatusFailed
-			m.progress.lastError = msg.err.Error()
+		if msg.snapshot != nil {
+			m.progress = *msg.snapshot
+		} else {
+			if m.progressCollector == nil {
+				m.progressCollector = xprogress.NewCollector()
+			}
+			m.progress = m.progressCollector.Finish(msg.err)
 		}
 		m.appendLine("")
+		m.appendLine(m.resultLabel() + " " + msg.elapsed.Truncate(time.Millisecond).String())
 		if msg.err != nil {
-			m.appendLine(stErr.Render(m.lang.t("status.failed") + " " + msg.elapsed.Truncate(time.Millisecond).String()))
-			m.appendLine(stErr.Render(msg.err.Error()))
-		} else {
-			m.appendLine(stOK.Render(m.lang.t("status.done") + " " + msg.elapsed.Truncate(time.Millisecond).String()))
+			m.appendLine(msg.err.Error())
 		}
+
 		return m, nil
 
 	case tea.MouseMsg:
@@ -314,7 +307,7 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	case tea.MouseButtonLeft:
 		// account chips on the header row: click to switch namespace
-		if !m.running && int(msg.Y) == 0 {
+		if !m.running && !m.isSetting && !m.settingsPrompt && int(msg.Y) == 0 {
 			for _, c := range m.nsChipLayout(m.width) {
 				if x := int(msg.X); x >= c.x0 && x < c.x1 {
 					return m.switchNS(c.ns)
@@ -323,15 +316,20 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		switch m.state() {
 		case stateRun:
-			if m.running {
-				// the status line sits 5 rows above the bottom edge and
-				// [stop] is its last 6 cells; computed, never stored, so
-				// the hit box cannot drift from what View rendered
-				x, y := int(msg.X), int(msg.Y)
-				if y == m.height-5 && x >= m.width-7 {
-					return m.stopRun()
+			for _, button := range m.runButtons() {
+				if button.contains(int(msg.X), int(msg.Y)) {
+					return m.activateButton(button.id)
 				}
 			}
+		case stateForm:
+			if m.isSetting && !m.settingsPrompt {
+				for _, button := range m.settingsButtons() {
+					if button.contains(int(msg.X), int(msg.Y)) {
+						return m.activateButton(button.id)
+					}
+				}
+			}
+
 		case stateMenu:
 			firstY, firstIx, count := m.menuWindow()
 			ix := int(msg.Y) - firstY + firstIx
@@ -348,13 +346,25 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func (m model) handleSettingsPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
 	case "s", "y":
-		m.applySettingsDraft()
-		m.settingsPrompt = false
+		quit := m.settingsQuit
+		if m.applySettingsDraft() {
+			m.toMenu()
+			if quit {
+				return m, tea.Quit
+			}
+		}
 	case "d", "n":
+		quit := m.settingsQuit
 		m.discardSettingsDraft()
+		if quit {
+			return m, tea.Quit
+		}
 	case "esc", "c":
 		m.settingsPrompt = false
+		m.settingsQuit = false
 	}
 	return m, nil
 }
@@ -363,6 +373,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Ctrl+C: stop a running command first, quit on the next press — an
 	// exec that ignores cancellation must never trap the user in the TUI
 	if msg.Type == tea.KeyCtrlC {
+		if m.isSetting {
+			m.updateSettingsDirty()
+			if m.settingsDirty {
+				m.settingsPrompt = true
+				m.settingsQuit = true
+				return m, nil
+			}
+		}
 		if m.running && m.state() == stateRun && !m.stopReq {
 			return m.stopRun()
 		}
@@ -393,11 +411,41 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.isSetting {
 			m.updateSettingsDirty()
 		}
+		if m.isSetting && m.settingsButton >= 0 {
+			switch msg.String() {
+			case "tab", "right":
+				m.settingsButton = (m.settingsButton + 1) % 2
+			case "shift+tab", "left":
+				m.settingsButton = (m.settingsButton + 1) % 2
+			case "up":
+				m.settingsButton = -1
+				m.focusFormField(len(m.form.fields) - 1)
+			case "enter", " ":
+				if m.settingsButton == 0 {
+					m.applySettingsDraft()
+				} else {
+					m.discardSettingsDraft()
+				}
+			case "esc":
+				m.updateSettingsDirty()
+				if m.settingsDirty {
+					m.settingsPrompt = true
+				} else {
+					m.toMenu()
+				}
+			}
+			return m, nil
+		}
 		f := &m.form.fields[m.formIx]
 		switch msg.String() {
 		case "up":
 			m.focusFormField(m.formIx - 1)
 		case "down", "tab":
+			if m.isSetting && msg.String() == "tab" && m.formIx == len(m.form.fields)-1 {
+				m.settingsButton = 0
+				f.ti.Blur()
+				return m, nil
+			}
 			m.focusFormField((m.formIx + 1) % len(m.form.fields))
 		case "shift+tab":
 			m.focusFormField(m.formIx - 1)
@@ -427,8 +475,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.settingsPrompt = true
 				return m, nil
 			}
-			m.form = nil
-			m.isSetting = false
+			m.toMenu()
 		default:
 			if f.kind == kText || f.kind == kExtra {
 				var cmd tea.Cmd
@@ -445,10 +492,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		switch msg.String() {
-		case "pgup":
+		case "d":
+			m.detailsOpen = !m.detailsOpen
+		case "up", "pgup":
 			m.follow = false
 			m.vp.LineUp(m.vp.Height / 2)
-		case "pgdown":
+		case "down", "pgdown":
 			m.vp.LineDown(m.vp.Height / 2)
 			if m.atBottom() {
 				m.follow = true
@@ -493,7 +542,8 @@ func (m *model) focusFormField(ix int) {
 }
 
 func (m model) openMenuItem(ix int) (tea.Model, tea.Cmd) {
-	a := &m.actions[ix]
+	definitions := newActions()
+	a := &definitions[ix]
 	switch a.id {
 	case "settings":
 		m.openSettings()
@@ -538,67 +588,28 @@ func (m model) launchAction(a *action) (tea.Model, tea.Cmd) {
 	m.showOutput = true
 	m.runErr = nil
 	m.runLabel = a.title(m.lang)
+	m.runCommand = "$ tdl " + quoteJoin(argv)
 	m.runStart = time.Now()
 	m.live = ""
 	m.stopReq = false
 
 	m.runID++
-	m.progress = progressSnapshot{status: xprogress.StatusRunning, items: make(map[string]xprogress.Event)}
+	m.progressCollector = xprogress.NewCollector()
+	m.progress = m.progressCollector.Snapshot()
 	m.detailsOpen = false
 	m.stopReq = false
 	m.cancelRun = startRun(m.ctx, m.program, m.exec, argv, m.runID)
-	return m, m.spinner.Tick
+	return m, nil
 }
 
 func (m *model) applyProgress(event xprogress.Event) {
-	if m.progress.items == nil {
-		m.progress.items = make(map[string]xprogress.Event)
+	if m.progressCollector == nil {
+		m.progressCollector = xprogress.NewCollector()
 	}
-	m.progress.items[event.TaskID] = event
-	var completed, total int64
-	var done int
-	for _, item := range m.progress.items {
-		if item.TotalBytes > 0 {
-			total += item.TotalBytes
-			completed += item.CompletedBytes
-		}
-		if item.Kind == xprogress.KindFinished {
-			done++
-		}
-	}
-	m.progress.direction = event.Direction
-	m.progress.currentFile = event.FileName
-	m.progress.completed = completed
-	m.progress.total = total
-	if event.At.IsZero() {
-		event.At = time.Now()
-	}
-	if m.progress.startedAt.IsZero() {
-		m.progress.startedAt = event.At
-	}
-	if !m.progress.lastAt.IsZero() && event.At.After(m.progress.lastAt) && completed >= m.progress.lastBytes {
-		m.progress.speed = float64(completed-m.progress.lastBytes) / event.At.Sub(m.progress.lastAt).Seconds()
-	}
-	m.progress.lastAt = event.At
-	m.progress.lastBytes = completed
-	if event.TasksTotal > 0 {
-		m.progress.tasksTotal = event.TasksTotal
-	}
-	m.progress.tasksDone = done
-	if event.Kind == xprogress.KindFinished {
-		m.progress.status = event.Status
-		m.progress.lastError = event.Err
-	} else {
-		m.progress.status = xprogress.StatusRunning
-	}
+	m.progressCollector.Emit(event)
+	m.progress = m.progressCollector.Snapshot()
 }
-
-func (m model) progressPercent() (float64, bool) {
-	if m.progress.total <= 0 {
-		return 0, false
-	}
-	return float64(m.progress.completed) / float64(m.progress.total) * 100, true
-}
+func (m model) progressPercent() (float64, bool) { return m.progress.Percent() }
 
 func (m model) stopRun() (tea.Model, tea.Cmd) {
 	m.stopReq = true
@@ -615,8 +626,13 @@ func (m model) switchNS(ns string) (tea.Model, tea.Cmd) {
 	if ns == m.currentNS() {
 		return m, nil
 	}
-	m.set.NS = ns
-	_ = saveSettings(m.set)
+	candidate := m.set
+	candidate.NS = ns
+	if err := saveSettings(candidate); err != nil {
+		m.settingsError = err.Error()
+		return m, nil
+	}
+	m.set = candidate
 	return m, nil
 }
 
@@ -627,7 +643,17 @@ func (m *model) toMenu() {
 	m.showOutput = false
 	m.live = ""
 	m.scrollback = nil
-	m.progress = progressSnapshot{}
+	m.progress = xprogress.Snapshot{}
+	m.progressCollector = nil
+	m.detailsOpen = false
+	m.follow = true
+	m.stopReq = false
+	m.runLabel = ""
+	m.runCommand = ""
+	m.settingsPrompt = false
+	m.settingsQuit = false
+	m.settingsError = ""
+	m.settingsButton = -1
 	m.runErr = nil
 	m.runLast = 0
 	m.cancelRun = nil
@@ -657,6 +683,8 @@ func (m *model) appendLine(line string) {
 }
 
 func (m *model) renderViewport() {
+	m.vp.Width = m.width
+	m.vp.Height = max(1, m.mainHeight()-len(m.runSummaryRows()))
 	if m.follow {
 		m.vp.SetContent(strings.Join(m.scrollback, "\n"))
 		m.vp.GotoBottom()
@@ -684,7 +712,7 @@ func (m model) mainHeight() int {
 
 func (m model) View() string {
 	if m.width == 0 {
-		return "loading..."
+		return m.lang.t("status.loading")
 	}
 
 	var b []string
@@ -712,7 +740,7 @@ func (m model) View() string {
 	case stateForm:
 		b = append(b, m.viewForm())
 	default:
-		b = append(b, m.vp.View())
+		b = append(b, m.viewRun())
 	}
 
 	// status line (visible while running, grok-style)
@@ -724,7 +752,10 @@ func (m model) View() string {
 	// shortcuts bar
 	b = append(b, m.viewShortcuts())
 
-	return lipgloss.JoinVertical(lipgloss.Left, b...)
+	for i := range b {
+		b[i] = fitScreen(b[i], m.width, 0)
+	}
+	return fitScreen(lipgloss.JoinVertical(lipgloss.Left, b...), m.width, m.height)
 }
 
 // menuShowsLogo reports whether the ASCII logo fits above the menu.
@@ -832,8 +863,14 @@ func (m model) viewMenu() string {
 }
 
 func (m model) viewForm() string {
-	rows := []string{stTitle.Render(m.form.title(m.lang)), ""}
-	for i := range m.form.fields {
+	subtitle := "$ tdl " + quoteJoin(m.form.argv(m.set.globalArgs()))
+	if m.isSetting {
+		subtitle = m.lang.t("set.global")
+	}
+	rows := []string{stTitle.Render(m.form.title(m.lang)), stCmdEcho.Render(subtitle)}
+	first := max(0, m.formIx-max(1, m.mainHeight()-3)+1)
+	last := min(len(m.form.fields), first+max(1, m.mainHeight()-2))
+	for i := first; i < last; i++ {
 		f := &m.form.fields[i]
 		cursor := "  "
 		label := stFieldLabel.Render(f.label(m.lang))
@@ -859,7 +896,10 @@ func (m model) viewForm() string {
 			}
 			value = strings.Join(chs, stShortcutSep.Render("/")) + "  " + stFieldFlag.Render(f.flag)
 		default:
-			value = stFieldValue.Render(localizedPlaceholder(m.lang, f.ti.View())) + "  " + stFieldFlag.Render(f.flag)
+			input := f.ti
+			input.Placeholder = localizedPlaceholder(m.lang, f.placeholder)
+			input.Width = max(1, m.width-lipgloss.Width(f.label(m.lang))-lipgloss.Width(f.flag)-10)
+			value = stFieldValue.Render(input.View()) + "  " + stFieldFlag.Render(f.flag)
 		}
 		if i == m.formIx {
 			cursor = stFieldFocus.Render("▸ ")
@@ -871,53 +911,22 @@ func (m model) viewForm() string {
 	return lipgloss.NewStyle().Height(m.mainHeight()).Render(body)
 }
 
-func (m model) viewStatus() string {
-	if !m.running {
-		return ""
-	}
-	percent, determinate := m.progressPercent()
-	barWidth := m.width - 42
-	if barWidth < 12 {
-		barWidth = 12
-	}
-	filled := 0
-	if determinate {
-		filled = int(percent / 100 * float64(barWidth))
-	}
-	if filled > barWidth {
-		filled = barWidth
-	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-	pct := "--"
-	if determinate {
-		pct = fmt.Sprintf("%4.1f%%", percent)
-	}
-	file := m.progress.currentFile
-	if file == "" {
-		file = m.runLabel
-	}
-	if m.stopReq {
-		file = m.lang.t("status.stopping")
-	}
-	line := stFieldFocus.Render(file) + " " + stOK.Render(bar) + " " + stHint.Render(pct)
-	if m.progress.tasksTotal > 0 {
-		line += " " + stHint.Render(fmt.Sprintf("%d/%d", m.progress.tasksDone, m.progress.tasksTotal))
-	}
-	return stStatusBg.Render(line)
-}
-
 func (m model) viewPrompt() string {
 	if m.settingsPrompt {
-		return stPromptBorderActive.Width(m.width - 2).Render(stHint.Render(m.lang.t("set.unsaved")))
+		return stPromptBorderActive.Width(m.width - 2).Render(stHint.Render(m.lang.t("set.unsaved") + " " + m.settingsError))
 	}
 	var text string
 	switch m.state() {
 	case stateForm:
 		argv := m.form.argv(m.set.globalArgs())
 		if m.isSetting {
-			text = stCmdEcho.Render("tdl " + m.lang.t("set.global"))
+			text = stCmdEcho.Render(m.currentFieldHelp())
+			if m.settingsError != "" {
+				text = stErr.Render(m.settingsError)
+			}
 		} else {
-			text = stCmdEcho.Render("$ tdl " + quoteJoin(argv))
+			_ = argv
+			text = stHint.Render(m.currentFieldHelp())
 		}
 	case stateRun:
 		if m.running {
@@ -932,7 +941,7 @@ func (m model) viewPrompt() string {
 	if m.state() == stateRun && !m.running {
 		box = stPromptBorder
 	}
-	return box.Width(m.width - 2).MaxHeight(3).Render(text)
+	return box.Width(max(1, m.width-2)).MaxHeight(3).Render(text)
 }
 
 func (m model) viewShortcuts() string {
@@ -947,9 +956,12 @@ func (m model) viewShortcuts() string {
 	case stateMenu:
 		return sc("↑↓", m.lang.t("sc.updown"), "enter", m.lang.t("sc.enter"), "esc", m.lang.t("sc.quit"))
 	case stateForm:
+		if m.isSetting {
+			return sc("tab", m.lang.t("sc.updown"), "enter", m.lang.t("set.apply"), "esc", m.lang.t("form.back"))
+		}
 		return sc("↑↓/tab", m.lang.t("sc.updown"), "space", m.lang.t("sc.space"), "enter", m.lang.t("form.run"), "esc", m.lang.t("form.back"))
 	default:
 		return sc("↑↓", m.lang.t("sc.scroll"), "enter", m.lang.t("form.back"),
-			"ctrl+c", m.lang.t("sc.ctrlc"), "ctrl+c ×2", m.lang.t("sc.quit"))
+			"d", m.lang.t("run.details"), "ctrl+c", m.lang.t("sc.ctrlc"), "ctrl+c ×2", m.lang.t("sc.quit"))
 	}
 }

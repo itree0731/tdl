@@ -12,11 +12,9 @@ import (
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	"github.com/iyear/tdl/core/transfer"
 	"github.com/samber/lo"
-	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 
-	"github.com/iyear/tdl/core/logctx"
 	"github.com/iyear/tdl/core/util/fsutil"
 	"github.com/iyear/tdl/core/util/mediautil"
 )
@@ -40,44 +38,26 @@ func New(o Options) *Uploader {
 }
 
 func (u *Uploader) Upload(ctx context.Context, limit int) error {
-	wg, wgctx := errgroup.WithContext(ctx)
-	wg.SetLimit(limit)
-
-	for u.opts.Iter.Next(wgctx) {
+	return transfer.Run(ctx, limit, u.opts.Iter.Next, func() Elem {
 		elem := u.opts.Iter.Value()
-
-		wg.Go(func() (rerr error) {
+		if q, ok := u.opts.Progress.(interface{ OnQueued(Elem) }); ok {
+			q.OnQueued(elem)
+		}
+		return elem
+	}, u.opts.Iter.Err,
+		func(workCtx context.Context, elem Elem) error {
 			u.opts.Progress.OnAdd(elem)
-
-			var uerr error
-			defer func() { u.opts.Progress.OnDone(elem, uerr) }()
-
-			uerr = u.upload(wgctx, elem)
-			if uerr != nil {
-				// canceled by user, so we directly return error to stop all
-				if errors.Is(uerr, context.Canceled) {
-					return errors.Wrap(uerr, "upload")
-				}
-
-				// don't fail the whole group, just log it,
-				// but the error must reach OnDone so progress
-				// can skip post actions (e.g. --remove source deletion)
-				logctx.From(ctx).Error("Upload error",
-					zap.Any("element", elem),
-					zap.Error(uerr),
-				)
+			err := u.upload(workCtx, elem)
+			if finalizer, ok := u.opts.Progress.(Completion); ok {
+				return finalizer.Finalize(elem, err)
 			}
-
-			return nil
+			u.opts.Progress.OnDone(elem, err)
+			return err
+		}, func() {
+			if observer, ok := u.opts.Progress.(interface{ OnDiscoveryDone() }); ok {
+				observer.OnDiscoveryDone()
+			}
 		})
-	}
-
-	if err := u.opts.Iter.Err(); err != nil {
-		wg.Wait() // let in-flight goroutines settle before the caller tears down connections
-		return errors.Wrap(err, "iter")
-	}
-
-	return wg.Wait()
 }
 
 func (u *Uploader) upload(ctx context.Context, elem Elem) error {
@@ -85,6 +65,11 @@ func (u *Uploader) upload(ctx context.Context, elem Elem) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+	if prepared, ok := elem.(PreparedElem); ok {
+		if err := prepared.PreparationError(); err != nil {
+			return errors.Wrap(err, "prepare upload")
+		}
 	}
 
 	up := uploader.NewUploader(u.opts.Client).
@@ -120,12 +105,12 @@ func (u *Uploader) upload(ctx context.Context, elem Elem) error {
 	})
 
 	doc := message.UploadedDocument(f, caption).MIME(mime.String()).Filename(elem.File().Name())
-	// upload thumbnail TODO(iyear): maybe still unavailable
 	if thumb, ok := elem.Thumb(); ok {
-		if thumbFile, err := uploader.NewUploader(u.opts.Client).
-			FromReader(ctx, thumb.Name(), thumb); err == nil {
-			doc = doc.Thumb(thumbFile)
+		thumbFile, thumbErr := uploadThumbnail(ctx, u.opts.Client, thumb)
+		if thumbErr != nil {
+			return errors.Wrap(thumbErr, "upload thumbnail")
 		}
+		doc = doc.Thumb(thumbFile)
 	}
 
 	var media message.MediaOption = doc
@@ -164,4 +149,14 @@ func (u *Uploader) upload(ctx context.Context, elem Elem) error {
 	}
 
 	return nil
+}
+
+// uploadThumbnail always supplies the known byte size. FromReader represents
+// unknown-size streams as InputFileBig; Telegram may silently drop such a file
+// when it is used as the thumbnail of another big upload.
+func uploadThumbnail(ctx context.Context, client uploader.Client, thumb File) (tg.InputFileClass, error) {
+	return uploader.NewUploader(client).Upload(
+		ctx,
+		uploader.NewUpload(thumb.Name(), thumb, thumb.Size()),
+	)
 }

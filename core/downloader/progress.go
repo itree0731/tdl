@@ -46,3 +46,8 @@ func (w *writeAt) WriteAt(p []byte, off int64) (int, error) {
 	})
 	return at, nil
 }
+
+// Completion optionally reports errors from closing and finalizing a transfer.
+type Completion interface {
+	Finalize(elem Elem, err error) error
+}

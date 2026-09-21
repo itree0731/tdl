@@ -2,9 +2,13 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 
+	"github.com/iyear/tdl/core/util/netutil"
 	"github.com/iyear/tdl/pkg/consts"
 )
 
@@ -23,7 +27,7 @@ var zhFieldLabels = map[string]string{
 	"Include ext": "包含扩展名", "Exclude ext": "排除扩展名", "Rewrite ext": "重写扩展名", "Skip same name": "跳过同名文件",
 	"Newest first": "最新优先", "Grouped media": "媒体分组", "Takeout session": "Takeout 会话", "Serve over HTTP": "通过 HTTP 提供服务",
 	"Paths (comma separated)": "路径（逗号分隔）", "Chat": "会话目标", "Topic id": "主题 ID", "To (router expr)": "目标（路由表达式）",
-	"Remove after upload": "上传后删除", "As photo": "作为图片发送", "Output": "输出格式", "Filter expr": "过滤表达式",
+	"Remove after upload": "上传后删除", "As photo": "作为图片发送", "Disable auto thumbnail": "禁用自动视频封面", "Output": "输出格式", "Filter expr": "过滤表达式",
 	"Export type": "导出类型", "Input (comma separated)": "输入（逗号分隔）", "Output file": "输出文件", "With content": "包含内容",
 	"All messages": "全部消息", "Raw struct": "原始结构", "Chat domain": "会话域名", "From (comma separated)": "来源（逗号分隔）",
 	"To": "目标", "Edit expr": "编辑表达式", "Mode": "模式", "Silent": "静默发送", "Dry run": "演练模式",
@@ -38,9 +42,10 @@ var zhChoiceLabels = map[string]string{
 }
 
 var zhPlaceholders = map[string]string{
+	"dirs or files": "文件或目录，可用逗号分隔", "protocol://host:port": "协议://主机:端口",
 	"official client path": "官方客户端路径", "empty if none": "没有密码则留空", "https://t.me/...": "https://t.me/...",
 	"result.json": "result.json", "downloads": "下载目录", "mp4,mp3": "mp4,mp3", "png,jpg": "png,jpg",
-	"D:\\videos": "D:\\videos", "empty = Saved Messages": "留空表示已保存的消息", "0": "0", "CHAT expr": "会话或路由表达式",
+	"D:\\videos": "D:\\videos", "empty = Saved Messages": "留空表示收藏夹", "0": "0", "CHAT expr": "会话或路由表达式",
 	"true": "true", "depends on type": "根据导出类型填写", "tdl-export.json": "tdl-export.json", "channel domain": "频道域名",
 	"links or export files": "链接或导出文件", "CHAT or router expr": "会话或路由表达式", "empty = no edit": "留空表示不编辑",
 	"<date>.backup.tdl": "<日期>.backup.tdl", "xxx.backup.tdl": "xxx.backup.tdl", "v0.20.4": "v0.20.4",
@@ -244,6 +249,12 @@ var zh = dict{
 }
 
 func (l Lang) t(key string) string {
+	if pair, ok := uiMessages[key]; ok {
+		if l == LangZh {
+			return pair[1]
+		}
+		return pair[0]
+	}
 	var d dict
 	switch l {
 	case LangZh:
@@ -282,10 +293,49 @@ func loadSettings() settings {
 	return s
 }
 
+func validateSettings(s settings) error {
+	for _, v := range []struct{ name, value string }{{"set.threads", s.Threads}, {"set.limit", s.Limit}} {
+		if v.value != "" {
+			n, err := strconv.Atoi(v.value)
+			if err != nil || n < 1 {
+				return fmt.Errorf("%s: %s", Lang(s.Language).t(v.name), Lang(s.Language).t("set.positive"))
+			}
+		}
+	}
+	if s.Proxy != "" {
+		u, err := url.Parse(s.Proxy)
+		_, dialerErr := netutil.NewProxy(s.Proxy)
+		if err != nil || u.Scheme == "" || u.Host == "" || dialerErr != nil {
+			return fmt.Errorf("%s: %s", Lang(s.Language).t("set.proxy"), Lang(s.Language).t("set.proxy.invalid"))
+		}
+	}
+	return nil
+}
 func saveSettings(s settings) error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(settingsPath(), b, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(settingsPath()), ".tui-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	if err = f.Chmod(0600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err = f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, settingsPath())
 }

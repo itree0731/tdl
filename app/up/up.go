@@ -26,21 +26,21 @@ import (
 	"github.com/iyear/tdl/core/uploader"
 	"github.com/iyear/tdl/core/util/tutil"
 	"github.com/iyear/tdl/pkg/consts"
-	"github.com/iyear/tdl/pkg/prog"
+	xprogress "github.com/iyear/tdl/pkg/progress"
 	"github.com/iyear/tdl/pkg/texpr"
-	"github.com/iyear/tdl/pkg/utils"
 )
 
 type Options struct {
-	Chat     string
-	Thread   int
-	To       string
-	Paths    []string
-	Includes []string
-	Excludes []string
-	Remove   bool
-	Photo    bool
-	Caption  string
+	Chat        string
+	Thread      int
+	To          string
+	Paths       []string
+	Includes    []string
+	Excludes    []string
+	Remove      bool
+	Photo       bool
+	NoAutoThumb bool
+	Caption     string
 }
 
 type Env struct {
@@ -52,6 +52,8 @@ type Env struct {
 }
 
 func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Options) (rerr error) {
+	finishProgress := func(error) {}
+	defer func() { finishProgress(rerr) }()
 	if opts.To == "-" || opts.Caption == "-" {
 		fg := texpr.NewFieldsGetter(nil)
 
@@ -88,23 +90,16 @@ func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Opti
 		return errors.Wrap(err, "get caption")
 	}
 
-	upProgress := prog.New(utils.Byte.FormatBinaryBytes)
-	upProgress.SetNumTrackersExpected(len(files))
-	if !viper.GetBool(consts.FlagDisableProgressPS) {
-		prog.EnablePS(ctx, upProgress)
-	}
+	ctx, finishProgress = xprogress.StartCLI(ctx, os.Stderr, !viper.GetBool(consts.FlagDisableProgressPS))
 
 	options := uploader.Options{
 		Client:   pool.Default(ctx),
 		Threads:  viper.GetInt(consts.FlagThreads),
-		Iter:     newIter(files, to, caption, opts.Chat, opts.Thread, opts.Photo, opts.Remove, viper.GetDuration(consts.FlagDelay), manager),
-		Progress: newProgress(ctx, upProgress, len(files)),
+		Iter:     newIter(files, to, caption, opts.Chat, opts.Thread, opts.Photo, opts.Remove, opts.NoAutoThumb, viper.GetDuration(consts.FlagDelay), manager),
+		Progress: newProgress(ctx, len(files)),
 	}
 
 	up := uploader.New(options)
-
-	go upProgress.Render()
-	defer prog.Wait(ctx, upProgress)
 
 	return up.Upload(ctx, viper.GetInt(consts.FlagLimit))
 }

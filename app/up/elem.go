@@ -18,8 +18,10 @@ type iterElem struct {
 	caption *entity.Builder
 	thread  int
 
-	asPhoto bool
-	remove  bool
+	asPhoto        bool
+	remove         bool
+	temporaryThumb string
+	preparationErr error
 }
 
 func (e *iterElem) File() uploader.File {
@@ -47,6 +49,10 @@ func (e *iterElem) Thread() int {
 
 func (e *iterElem) AsPhoto() bool {
 	return e.asPhoto
+}
+
+func (e *iterElem) PreparationError() error {
+	return e.preparationErr
 }
 
 type uploaderFile struct {

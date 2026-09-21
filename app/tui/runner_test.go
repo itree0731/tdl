@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"errors"
+	xp "github.com/iyear/tdl/pkg/progress"
 	"io"
 	"testing"
 	"time"
@@ -59,5 +61,32 @@ func TestStartRunDeliversCompletionToProgram(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("program did not exit after runDoneMsg")
+	}
+}
+
+func TestCanceledExecutorReturningNilStillReportsCanceled(t *testing.T) {
+	done := make(chan runDoneMsg, 1)
+	p := tea.NewProgram(runnerTestModel{done: done}, tea.WithInput(nil), tea.WithOutput(io.Discard), tea.WithoutSignals())
+	exited := make(chan error, 1)
+	go func() { _, err := p.Run(); exited <- err }()
+	started := make(chan struct{})
+	cancel := startRun(context.Background(), p, func(ctx context.Context, _ []string, _ io.Writer) error { close(started); <-ctx.Done(); return nil }, nil, 7)
+	<-started
+	cancel()
+	select {
+	case result := <-done:
+		if !errors.Is(result.err, context.Canceled) || result.snapshot.Status != xp.StatusCanceled {
+			t.Fatalf("%+v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel did not complete")
+	}
+	select {
+	case err := <-exited:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("program did not exit")
 	}
 }

@@ -27,3 +27,10 @@ type Elem interface {
 	Thread() int
 	AsPhoto() bool
 }
+
+// PreparedElem can report a per-item preparation failure. The uploader checks
+// it before making network requests, so a batch can continue with later items
+// while preserving an accurate aggregate error.
+type PreparedElem interface {
+	PreparationError() error
+}

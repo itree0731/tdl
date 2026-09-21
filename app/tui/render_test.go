@@ -43,6 +43,7 @@ func key(t *testing.T, m model, k tea.KeyMsg) model {
 }
 
 func TestRenderMenuSnapshot(t *testing.T) {
+	isolateSettings(t)
 	m := sized(t, newModel(stubExec, nil), 90, 24)
 	out := renderPlain(m)
 	t.Log("\n" + out)
@@ -55,6 +56,7 @@ func TestRenderMenuSnapshot(t *testing.T) {
 }
 
 func TestRenderFormSnapshot(t *testing.T) {
+	isolateSettings(t)
 	m := sized(t, newModel(stubExec, nil), 90, 24)
 	m = key(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = key(t, m, tea.KeyMsg{Type: tea.KeyEnter})
@@ -69,6 +71,7 @@ func TestRenderFormSnapshot(t *testing.T) {
 }
 
 func TestRenderRunSnapshot(t *testing.T) {
+	isolateSettings(t)
 	m := sized(t, newModel(stubExec, nil), 90, 24)
 	m = key(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = key(t, m, tea.KeyMsg{Type: tea.KeyEnter})
@@ -99,6 +102,7 @@ func TestRenderRunSnapshot(t *testing.T) {
 }
 
 func TestRenderSettingsZhSnapshot(t *testing.T) {
+	isolateSettings(t)
 	m := sized(t, newModel(stubExec, nil), 90, 24)
 	ix := 0
 	for i, a := range m.actions {
@@ -130,6 +134,7 @@ func click(t *testing.T, m model, x, y int) model {
 }
 
 func TestMouseClickMenuNoLogo(t *testing.T) {
+	isolateSettings(t)
 	// 24 rows: no logo, first item at Y=3 (header, title, blank)
 	m := sized(t, newModel(stubExec, nil), 90, 24)
 	m.menuIx = 2 // keep the first click off the pre-selected item
@@ -145,6 +150,7 @@ func TestMouseClickMenuNoLogo(t *testing.T) {
 }
 
 func TestMouseClickMenuWithLogo(t *testing.T) {
+	isolateSettings(t)
 	// 40 rows: logo shown, first item pushed down to Y=10
 	m := sized(t, newModel(stubExec, nil), 90, 40)
 	if !m.menuShowsLogo() {
@@ -162,6 +168,7 @@ func TestMouseClickMenuWithLogo(t *testing.T) {
 }
 
 func TestLogoRendersAndDegrades(t *testing.T) {
+	isolateSettings(t)
 	m := sized(t, newModel(stubExec, nil), 90, 40)
 	if out := renderPlain(m); !strings.Contains(out, "████████╗") {
 		t.Error("logo missing at 40 rows")
@@ -174,6 +181,7 @@ func TestLogoRendersAndDegrades(t *testing.T) {
 }
 
 func TestNamespacesChip(t *testing.T) {
+	isolateSettings(t)
 	m := sized(t, newModel(stubExec, []string{"default", "work"}), 90, 24)
 	out := renderPlain(m)
 	if !strings.Contains(out, "● default  ○ work") {
@@ -186,6 +194,7 @@ func TestNamespacesChip(t *testing.T) {
 }
 
 func TestEnterOnBoolFieldRuns(t *testing.T) {
+	isolateSettings(t)
 	m := sized(t, newModel(stubExec, nil), 90, 24)
 	m = key(t, m, tea.KeyMsg{Type: tea.KeyDown}) // Download
 	m = key(t, m, tea.KeyMsg{Type: tea.KeyEnter})
