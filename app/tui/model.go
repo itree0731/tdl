@@ -1329,13 +1329,13 @@ func (m model) atBottom() bool {
 // view
 
 func (m model) mainHeight() int {
-	if chooseLayout(m.width, m.height) == layoutWide {
+	switch chooseLayout(m.width, m.height) {
+	case layoutWide:
 		return max(6, m.height-wideHeaderHeight-wideFooterHeight)
+	case layoutCompact:
+		return max(3, m.height-3) // header + compact navigation + footer
 	}
 	h := m.height - 6 // header 1 + status 1 + prompt 3 + shortcuts 1
-	if m.sidebarWidth() == 0 {
-		h-- // compact navigation row
-	}
 	if h < 3 {
 		h = 3
 	}
@@ -1376,6 +1376,9 @@ func (m model) frame() Frame {
 	}
 	if chooseLayout(m.width, m.height) == layoutWide {
 		return m.wideFrame()
+	}
+	if chooseLayout(m.width, m.height) == layoutCompact {
+		return m.compactFrame()
 	}
 
 	var b []string
@@ -1514,6 +1517,9 @@ func (m model) nsChipLayout(width int) []nsChip {
 }
 
 func (m model) viewMenu() string {
+	if chooseLayout(m.width, m.height) == layoutCompact {
+		return m.viewMenuCompact()
+	}
 	a := m.actions[m.menuIx]
 	width := m.contentWidth()
 	account := m.currentNS()
@@ -1535,6 +1541,22 @@ func (m model) viewMenu() string {
 	}
 	panel := activeTheme.panelRaised.Width(max(1, width-6)).Render(strings.Join(card, "\n"))
 	return lipgloss.NewStyle().Width(width).Height(m.mainHeight()).Padding(1, 2).Render(panel)
+}
+
+func (m model) viewMenuCompact() string {
+	a := m.actions[m.menuIx]
+	account := m.currentNS()
+	if len(m.namespaces) == 0 {
+		account = m.lang.t("hdr.nosession")
+	}
+	rows := []string{
+		stFieldFocus.Render(a.title(m.lang)),
+		activeTheme.text.Width(max(1, m.width-2)).Render(a.desc(m.lang)),
+		stHint.Render(m.lang.t("home.account")+": ") + stSys.Render(account),
+		stHint.Render(m.lang.t("home.concurrent")+": ") + stSys.Render(defaultText(m.set.Limit, "2")),
+		stFieldFocus.Render("[ " + m.lang.t("form.open") + " ]"),
+	}
+	return fitScreen(strings.Join(rows, "\n"), m.contentWidth(), m.mainHeight())
 }
 
 func defaultText(v, fallback string) string {
@@ -1595,6 +1617,8 @@ func (m model) hitRegions() []HitRegion {
 		for i := range m.actions {
 			regions = append(regions, HitRegion{ID: "menu:" + m.actions[i].id, Rect: Rect{X: 0, Y: menuTop + i, W: sw, H: 1}, Enabled: m.state() == stateMenu, Action: UIAction{Kind: UIActionMenu, Index: i, ID: m.actions[i].id}})
 		}
+	} else if chooseLayout(m.width, m.height) == layoutCompact && m.state() == stateMenu {
+		regions = append(regions, HitRegion{ID: "menu:" + m.actions[m.menuIx].id, Rect: Rect{X: 0, Y: m.contentTop(), W: m.width, H: m.mainHeight()}, Enabled: true, Action: UIAction{Kind: UIActionMenu, Index: m.menuIx, ID: m.actions[m.menuIx].id}})
 	}
 	if m.state() == stateForm && m.form != nil {
 		x := m.sidebarWidth()

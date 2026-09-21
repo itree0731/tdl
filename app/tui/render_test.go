@@ -206,6 +206,14 @@ func TestResponsiveFramesStayInsideTerminal(t *testing.T) {
 	for _, size := range []struct{ w, h int }{{120, 30}, {80, 24}, {32, 12}} {
 		m := sized(t, newModel(stubExec, []string{"default"}), size.w, size.h)
 		assertFrameFits(t, m, size.w, size.h)
+		if size.w == 32 {
+			out := renderPlain(m)
+			for _, required := range []string{"Login", "Open", "enter"} {
+				if !strings.Contains(out, required) {
+					t.Fatalf("compact menu hides %q:\n%s", required, out)
+				}
+			}
+		}
 		r, _ := m.openMenuItem(indexOfAction(m, "up"))
 		m = asModel(r)
 		m = sized(t, m, size.w, size.h)

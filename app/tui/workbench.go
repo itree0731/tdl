@@ -47,6 +47,19 @@ func (m model) wideFrame() Frame {
 	return Frame{Text: fitScreen(text, m.width, m.height), Regions: m.hitRegions()}
 }
 
+func (m model) compactFrame() Frame {
+	header := stBrand.Render(brandName) + "  " + stHint.Render(m.lang.t("banner.title"))
+	if len(m.namespaces) > 0 {
+		header += "  " + stOK.Render("● "+m.currentNS())
+	}
+	header = ansi.Truncate(header, max(1, m.width), "…")
+	nav := m.viewCompactNav()
+	page := fitScreen(m.currentPage(), m.width, m.mainHeight())
+	footer := activeTheme.status.Width(max(1, m.width)).Render(ansi.Truncate(m.viewShortcuts(), max(1, m.width), "…"))
+	text := lipgloss.JoinVertical(lipgloss.Left, header, nav, page, footer)
+	return Frame{Text: fitScreen(text, m.width, m.height), Regions: m.hitRegions()}
+}
+
 func (m model) viewWideSidebar(width, height int) string {
 	rows := []string{
 		stBrand.Render("  T D L"),
