@@ -13,3 +13,21 @@ func TestBuildUploadArgsPreservesPathsAndCoverOptions(t *testing.T) {
 		t.Fatalf("args=%v\nwant=%v", got, want)
 	}
 }
+
+func TestBuildDownloadArgsUsesNonInteractiveResumeAndPreservesURLs(t *testing.T) {
+	req := DownloadRequest{
+		Namespace: "work",
+		URLs:      []string{"https://t.me/c/123/4?single", "https://t.me/example/8"},
+		Files:     []string{`C:\exports\one, two.json`},
+		Directory: `D:\download target`,
+		Threads:   8,
+		Limit:     3,
+		SkipSame:  true,
+		Group:     true,
+	}
+	got := buildDownloadArgs(req)
+	want := []string{"--ns", "work", "--threads", "8", "--limit", "3", "dl", "--dir", `D:\download target`, "--url", "https://t.me/c/123/4?single", "--url", "https://t.me/example/8", "--file", `C:\exports\one, two.json`, "--continue", "--skip-same", "--group"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args=%v\nwant=%v", got, want)
+	}
+}

@@ -68,18 +68,26 @@ const emptySnapshot: Snapshot = {
 };
 
 const savedMessages: ChatRef = {id: 0, username: '', title: 'Saved Messages', type: 'self', topics: [], self: true};
+type WorkspacePage = 'upload' | 'download';
 const nav = [
-  [Upload, '上传'],
-  [ArrowDownToLine, '下载'],
-  [MessageSquare, '会话'],
-  [ArrowUpFromLine, '任务'],
-  [Database, '备份'],
-  [RefreshCcw, '恢复'],
-  [Settings, '设置'],
+  [Upload, '上传', 'upload'],
+  [ArrowDownToLine, '下载', 'download'],
+  [MessageSquare, '会话', ''],
+  [ArrowUpFromLine, '任务', ''],
+  [Database, '备份', ''],
+  [RefreshCcw, '恢复', ''],
+  [Settings, '设置', ''],
 ] as const;
 
 export function App() {
   const [paths, setPaths] = useState<string[]>([]);
+  const [activePage, setActivePage] = useState<WorkspacePage>('upload');
+  const [downloadInput, setDownloadInput] = useState('');
+  const [downloadFiles, setDownloadFiles] = useState<string[]>([]);
+  const [downloadDirectory, setDownloadDirectory] = useState('downloads');
+  const [downloadGroup, setDownloadGroup] = useState(true);
+  const [downloadSkipSame, setDownloadSkipSame] = useState(true);
+  const [downloadRewrite, setDownloadRewrite] = useState(false);
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [namespace, setNamespace] = useState('default');
   const [running, setRunning] = useState(false);
@@ -134,6 +142,15 @@ export function App() {
     if (!query) return chatItems;
     return chatItems.filter((entry) => `${entry.title} ${entry.username} ${entry.type}`.toLocaleLowerCase().includes(query));
   }, [chatItems, chatQuery]);
+  const downloadURLs = useMemo(() => downloadInput.split(/\s+/).map((value) => value.trim()).filter(Boolean), [downloadInput]);
+
+  function switchPage(page: WorkspacePage) {
+    if (running || page === activePage) return;
+    setActivePage(page);
+    setError('');
+    setSnap(emptySnapshot);
+    setItems([]);
+  }
 
   async function pickFiles() {
     const value = await window.go.main.App.SelectUploadFiles();
@@ -143,6 +160,16 @@ export function App() {
   async function pickDirectory() {
     const value = await window.go.main.App.SelectUploadDirectory();
     if (value) setPaths([value]);
+  }
+
+  async function pickDownloadDirectory() {
+    const value = await window.go.main.App.SelectDownloadDirectory();
+    if (value) setDownloadDirectory(value);
+  }
+
+  async function pickDownloadFiles() {
+    const value = await window.go.main.App.SelectDownloadExportFiles();
+    if (value?.length) setDownloadFiles(value);
   }
 
   async function loadChats(cursor = 0, reset = false) {
@@ -193,17 +220,39 @@ export function App() {
     }
   }
 
+  async function startDownload() {
+    setError('');
+    setSnap(emptySnapshot);
+    setItems([]);
+    try {
+      await window.go.main.App.StartDownload({
+        namespace,
+        urls: downloadURLs,
+        files: downloadFiles,
+        directory: downloadDirectory,
+        threads: 4,
+        limit: 2,
+        group: downloadGroup,
+        skipSame: downloadSkipSame,
+        rewrite: downloadRewrite,
+      });
+      setRunning(true);
+    } catch (reason) {
+      setError(errorText(reason));
+    }
+  }
+
   return (
     <main className="shell">
       <aside className="sidebar">
         <section className="brand"><strong>TDL</strong><span>Telegram Media Transfer</span><em>传 输 工 作 台</em></section>
-        <nav>{nav.map(([Icon, label], index) => <button className={index === 0 ? 'active' : ''} key={label}><Icon size={21}/><span>{label}</span></button>)}</nav>
+        <nav>{nav.map(([Icon, label, page]) => <button disabled={!page || running} title={!page ? '后续阶段实现' : ''} className={page === activePage ? 'active' : ''} key={label} onClick={() => page && switchPage(page)}><Icon size={21}/><span>{label}</span></button>)}</nav>
         <footer><div>桌面版 · 本地运行</div><b>让传输更简单</b><small>MEDIA ANYWHERE<br/>WITH TDL</small></footer>
       </aside>
 
       <section className="workspace">
         <header className="session">
-          <span>工作区：<b>上传</b></span><i/>
+          <span>工作区：<b>{activePage === 'upload' ? '上传' : '下载'}</b></span><i/>
           <span>账号：<select disabled={running || chatLoading} value={namespace} onChange={(event) => setNamespace(event.target.value)}>{namespaces.map((value) => <option key={value}>{value}</option>)}</select></span><i/>
           <span>状态：<mark>● {running ? '传输中' : '就绪'}</mark></span>
           <time>{new Date().toLocaleString()}</time>
@@ -211,24 +260,26 @@ export function App() {
 
         <div className="overview">
           <article className="media card">
-            <label>UPLOAD TARGET</label>
-            <div className="cover"><MessageSquare size={32}/><span>{selectedChat.self ? 'SAVED' : selectedChat.type.toUpperCase()}</span><small>{targetLabel}</small></div>
+            <label>{activePage === 'upload' ? 'UPLOAD TARGET' : 'DOWNLOAD SOURCE'}</label>
+            {activePage === 'upload'
+              ? <div className="cover"><MessageSquare size={32}/><span>{selectedChat.self ? 'SAVED' : selectedChat.type.toUpperCase()}</span><small>{targetLabel}</small></div>
+              : <div className="cover download-cover"><ArrowDownToLine size={32}/><span>LINKS</span><small>{downloadURLs.length} 个链接 · {downloadFiles.length} 个导出文件</small></div>}
           </article>
 
           <article className="task card">
-            <h2><Upload/> 当前任务 <span>· 上传</span></h2><hr/>
-            <h1>{snap.CurrentFile || paths[0]?.split(/[\\/]/).pop() || '选择要上传的文件'}</h1>
-            <p>{paths.length ? `已选择 ${paths.length} 项` : '支持文件和目录 · 视频默认生成高清封面'}</p>
-            <div className="target-row">
-              <span>发送到</span><button disabled={running} onClick={openChatSelector}><MessageSquare size={15}/>{targetLabel}</button>
-            </div>
-            <div className="picker">
-              <button disabled={running} onClick={pickFiles}>选择文件</button>
-              <button disabled={running} onClick={pickDirectory}>选择目录</button>
-              <button className="primary" disabled={!paths.length || running} onClick={startUpload}>开始上传</button>
-            </div>
+            <h2>{activePage === 'upload' ? <Upload/> : <ArrowDownToLine/>} 当前任务 <span>· {activePage === 'upload' ? '上传' : '下载'}</span></h2><hr/>
+            {activePage === 'upload' ? <>
+              <h1>{snap.CurrentFile || paths[0]?.split(/[\\/]/).pop() || '选择要上传的文件'}</h1>
+              <p>{paths.length ? `已选择 ${paths.length} 项` : '支持文件和目录 · 视频默认生成高清封面'}</p>
+              <div className="target-row"><span>发送到</span><button disabled={running} onClick={openChatSelector}><MessageSquare size={15}/>{targetLabel}</button></div>
+              <div className="picker"><button disabled={running} onClick={pickFiles}>选择文件</button><button disabled={running} onClick={pickDirectory}>选择目录</button><button className="primary" disabled={!paths.length || running} onClick={startUpload}>开始上传</button></div>
+            </> : <>
+              <textarea className="download-input" disabled={running} value={downloadInput} onChange={(event) => setDownloadInput(event.target.value)} placeholder={'粘贴 Telegram 消息链接，每行一个\n例如：https://t.me/c/123456/789'}/>
+              <div className="download-destination"><span>保存到</span><button disabled={running} onClick={pickDownloadDirectory}><FolderOpen size={15}/><b>{downloadDirectory}</b></button><button disabled={running} onClick={pickDownloadFiles}>导入 JSON</button></div>
+              <div className="download-options"><label><input type="checkbox" checked={downloadGroup} onChange={(event) => setDownloadGroup(event.target.checked)}/> 自动下载媒体组</label><label><input type="checkbox" checked={downloadSkipSame} onChange={(event) => setDownloadSkipSame(event.target.checked)}/> 跳过同名同大小</label><label><input type="checkbox" checked={downloadRewrite} onChange={(event) => setDownloadRewrite(event.target.checked)}/> 修正扩展名</label><button className="primary" disabled={(!downloadURLs.length && !downloadFiles.length) || running} onClick={startDownload}>开始下载</button></div>
+            </>}
             <div className={`progress ${knownTotal ? '' : 'indeterminate'}`}><span style={knownTotal ? {width: `${pct}%`} : undefined}/><b>{knownTotal ? `${pct.toFixed(1)}%` : '--'}</b></div>
-            <p>已上传&nbsp; <strong>{bytes(snap.CompletedBytes)} / {knownTotal ? bytes(snap.TotalBytes) : '--'}</strong></p>
+            <p>{activePage === 'upload' ? '已上传' : '已下载'}&nbsp; <strong>{bytes(snap.CompletedBytes)} / {knownTotal ? bytes(snap.TotalBytes) : '--'}</strong></p>
             <div className="metrics">
               <span>◴ 速度&nbsp; <b>{bytes(snap.Speed)}/s</b>&nbsp;&nbsp; ETA&nbsp; <b>{eta}</b></span>
               <button className="danger" disabled={!running} onClick={() => window.go.main.App.StopTransfer()}><Square size={13}/>停止</button>

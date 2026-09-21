@@ -46,6 +46,20 @@ type UploadRequest struct {
 	Remove    bool     `json:"remove"`
 	AsPhoto   bool     `json:"asPhoto"`
 }
+
+type DownloadRequest struct {
+	Namespace string   `json:"namespace"`
+	URLs      []string `json:"urls"`
+	Files     []string `json:"files"`
+	Directory string   `json:"directory"`
+	Threads   int      `json:"threads"`
+	Limit     int      `json:"limit"`
+	Rewrite   bool     `json:"rewrite"`
+	SkipSame  bool     `json:"skipSame"`
+	Group     bool     `json:"group"`
+	Takeout   bool     `json:"takeout"`
+	Restart   bool     `json:"restart"`
+}
 type StartResult struct {
 	Accepted bool   `json:"accepted"`
 	Message  string `json:"message"`
@@ -89,6 +103,17 @@ func (a *App) SelectUploadFiles() ([]string, error) {
 }
 func (a *App) SelectUploadDirectory() (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择上传目录"})
+}
+
+func (a *App) SelectDownloadDirectory() (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择下载目录"})
+}
+
+func (a *App) SelectDownloadExportFiles() ([]string, error) {
+	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:   "选择 tdl 会话导出 JSON",
+		Filters: []runtime.FileFilter{{DisplayName: "JSON 文件 (*.json)", Pattern: "*.json"}},
+	})
 }
 
 func (a *App) ChatPage(namespace string, cursor, limit int) (ChatPage, error) {
@@ -169,6 +194,20 @@ func (a *App) StartUpload(req UploadRequest) (StartResult, error) {
 	if len(req.Paths) == 0 {
 		return StartResult{}, fmt.Errorf("请选择至少一个文件或目录")
 	}
+	return a.startTransfer("upload", buildUploadArgs(req))
+}
+
+func (a *App) StartDownload(req DownloadRequest) (StartResult, error) {
+	if len(req.URLs) == 0 && len(req.Files) == 0 {
+		return StartResult{}, fmt.Errorf("请至少输入一个 Telegram 消息链接或选择一个导出文件")
+	}
+	if req.Directory == "" {
+		return StartResult{}, fmt.Errorf("请选择下载目录")
+	}
+	return a.startTransfer("download", buildDownloadArgs(req))
+}
+
+func (a *App) startTransfer(direction string, args []string) (StartResult, error) {
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
@@ -176,13 +215,17 @@ func (a *App) StartUpload(req UploadRequest) (StartResult, error) {
 	}
 	if a.chatLoading {
 		a.mu.Unlock()
-		return StartResult{}, fmt.Errorf("正在加载会话，请稍后开始上传")
+		return StartResult{}, fmt.Errorf("正在加载会话，请稍后开始传输")
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.cancel, a.running = cancel, true
 	a.mu.Unlock()
-	go a.runUpload(ctx, req)
-	return StartResult{true, "上传任务已启动"}, nil
+	go a.runTransfer(ctx, direction, args)
+	message := "上传任务已启动"
+	if direction == "download" {
+		message = "下载任务已启动"
+	}
+	return StartResult{true, message}, nil
 }
 func (a *App) StopTransfer() bool {
 	a.mu.Lock()
@@ -194,7 +237,7 @@ func (a *App) StopTransfer() bool {
 	return true
 }
 
-func (a *App) runUpload(ctx context.Context, req UploadRequest) {
+func (a *App) runTransfer(ctx context.Context, direction string, args []string) {
 	collector := xprogress.NewCollector()
 	ctx = xprogress.WithSink(ctx, collector)
 	stopUpdates := make(chan struct{})
@@ -215,7 +258,6 @@ func (a *App) runUpload(ctx context.Context, req UploadRequest) {
 			}
 		}
 	}()
-	args := buildUploadArgs(req)
 	root := tdlcmd.New()
 	root.SetArgs(args)
 	root.SetOut(io.Discard)
@@ -226,11 +268,49 @@ func (a *App) runUpload(ctx context.Context, req UploadRequest) {
 	final := collector.FinishContext(ctx, err)
 	runtime.EventsEmit(a.ctx, "transfer:snapshot", final)
 	runtime.EventsEmit(a.ctx, "transfer:items", collector.Items())
-	runtime.EventsEmit(a.ctx, "transfer:done", map[string]any{"error": errorString(err), "canceled": errors.Is(ctx.Err(), context.Canceled)})
+	runtime.EventsEmit(a.ctx, "transfer:done", map[string]any{"direction": direction, "error": errorString(err), "canceled": errors.Is(ctx.Err(), context.Canceled)})
 	a.mu.Lock()
 	a.running = false
 	a.cancel = nil
 	a.mu.Unlock()
+}
+
+func buildDownloadArgs(req DownloadRequest) []string {
+	args := make([]string, 0, 24+len(req.URLs)*2+len(req.Files)*2)
+	if req.Namespace != "" {
+		args = append(args, "--ns", req.Namespace)
+	}
+	if req.Threads > 0 {
+		args = append(args, "--threads", strconv.Itoa(req.Threads))
+	}
+	if req.Limit > 0 {
+		args = append(args, "--limit", strconv.Itoa(req.Limit))
+	}
+	args = append(args, "dl", "--dir", req.Directory)
+	for _, url := range req.URLs {
+		args = append(args, "--url", url)
+	}
+	for _, file := range req.Files {
+		args = append(args, "--file", file)
+	}
+	if req.Restart {
+		args = append(args, "--restart")
+	} else {
+		args = append(args, "--continue")
+	}
+	if req.Rewrite {
+		args = append(args, "--rewrite-ext")
+	}
+	if req.SkipSame {
+		args = append(args, "--skip-same")
+	}
+	if req.Group {
+		args = append(args, "--group")
+	}
+	if req.Takeout {
+		args = append(args, "--takeout")
+	}
+	return args
 }
 
 func buildUploadArgs(req UploadRequest) []string {
