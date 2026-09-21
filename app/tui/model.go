@@ -655,6 +655,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.picker.request.Mode == PickSaveFile {
+			switch msg.Type {
+			case tea.KeyRunes, tea.KeySpace, tea.KeyBackspace, tea.KeyDelete, tea.KeyLeft, tea.KeyRight, tea.KeyHome, tea.KeyEnd:
+				var cmd tea.Cmd
+				m.picker.saveName, cmd = m.picker.saveName.Update(msg)
+				return m, cmd
+			}
+		}
 		switch msg.String() {
 		case "up", "k":
 			m.picker.cursor = max(0, m.picker.cursor-1)
@@ -865,6 +873,20 @@ func (m model) openFilePicker(fieldIndex int) (tea.Model, tea.Cmd) {
 		m.settingsError = err.Error()
 		return m, nil
 	}
+	if req.Mode == PickSaveFile {
+		name := filepath.Base(strings.TrimSpace(f.ti.Value()))
+		if name == "." || name == "" {
+			name = filepath.Base(f.def)
+		}
+		if name == "." || name == "" {
+			if req.Purpose == "backup_destination" {
+				name = time.Now().Format("20060102") + ".backup.tdl"
+			} else {
+				name = "output"
+			}
+		}
+		picker.saveName.SetValue(name)
+	}
 	m.picker = picker
 	m.pickerField = fieldIndex
 	m.screenID++
@@ -949,12 +971,22 @@ func (m model) closeFilePicker(apply bool) (tea.Model, tea.Cmd) {
 	paths := m.picker.selectedPaths()
 	switch m.picker.request.Mode {
 	case PickSaveFile:
-		name := filepath.Base(strings.TrimSpace(f.ti.Value()))
+		name := filepath.Base(strings.TrimSpace(m.picker.saveName.Value()))
 		if name == "." || name == "" {
 			name = filepath.Base(f.def)
 		}
 		if name == "." || name == "" {
 			name = "output"
+		}
+		if len(m.picker.request.AllowedExt) > 0 {
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")
+			allowed := strings.TrimPrefix(strings.ToLower(m.picker.request.AllowedExt[0]), ".")
+			if ext == "" {
+				name += "." + allowed
+			} else if ext != allowed {
+				m.picker.err = fmt.Sprintf(m.lang.t("picker.save.extension"), allowed)
+				return m, nil
+			}
 		}
 		paths = []string{filepath.Join(m.picker.cwd, name)}
 	case PickDirectory:

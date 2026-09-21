@@ -70,7 +70,7 @@ func (m model) viewChatPicker() string {
 		if p.topic >= 0 && p.topic < len(current.Topics) {
 			topic = fmt.Sprintf("%d · %s", current.Topics[p.topic].ID, current.Topics[p.topic].Title)
 		}
-		topicRow = stHint.Render(m.lang.t("chat.topic")+": ") + stSys.Render(topic)
+		topicRow = stHint.Render(m.lang.t("chat.topic")+": ") + stSys.Render(topic) + "  " + stFieldFocus.Render("[ "+m.lang.t("chat.topic.next")+" ]")
 	}
 	rows = append(rows, topicRow)
 	if p.err != "" {
@@ -97,6 +97,9 @@ func (m model) chatRegions() []HitRegion {
 			ID: fmt.Sprintf("chat:row:%d", visible), Rect: Rect{X: x, Y: m.contentTop() + 3 + visible - first, W: m.contentWidth(), H: 1}, Enabled: true,
 			Action: UIAction{Kind: UIActionPicker, ID: "chat", Index: visible},
 		})
+	}
+	if item, ok := m.chatPicker.current(); ok && len(item.Topics) > 0 {
+		regions = append(regions, HitRegion{ID: "chat.topic.next", Rect: Rect{X: x + 1, Y: m.contentTop() + m.mainHeight() - 3, W: m.contentWidth() - 2, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: "chat.topic.next"}})
 	}
 	y := m.contentTop() + m.mainHeight() - 1
 	xPos := x + 1

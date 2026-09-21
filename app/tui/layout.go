@@ -233,6 +233,16 @@ func (m model) activateButton(id string) (tea.Model, tea.Cmd) {
 		return m.loadMoreChats()
 	case "chat.manual", "chat.cancel":
 		return m.closeChatSelector(false)
+	case "chat.topic.next":
+		if m.chatPicker != nil {
+			if item, ok := m.chatPicker.current(); ok && len(item.Topics) > 0 {
+				if m.chatPicker.topic >= len(item.Topics)-1 {
+					m.chatPicker.topic = -1
+				} else {
+					m.chatPicker.topic++
+				}
+			}
+		}
 	case "retry.cancel":
 		m.retryPrompt = false
 	case "errors.copy":

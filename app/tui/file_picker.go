@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/charmbracelet/bubbles/textinput"
 )
 
 type pickerSort uint8
@@ -44,6 +46,7 @@ type filePicker struct {
 	scanner       *selectionScanner
 	pendingPaths  []string
 	problemPlan   *SelectionPlan
+	saveName      textinput.Model
 }
 
 type selectionScanner struct {
@@ -80,6 +83,11 @@ func newFilePicker(req PickerRequest) (*filePicker, error) {
 		return nil, err
 	}
 	p := &filePicker{request: req, cwd: abs, selected: make(map[string]bool)}
+	if req.Mode == PickSaveFile {
+		p.saveName = textinput.New()
+		p.saveName.Placeholder = "output"
+		p.saveName.Focus()
+	}
 	if err := p.refresh(); err != nil {
 		return nil, err
 	}

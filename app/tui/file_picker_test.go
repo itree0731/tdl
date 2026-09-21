@@ -267,6 +267,28 @@ func TestScanProblemsRequireExplicitSkipBeforeApplying(t *testing.T) {
 	}
 }
 
+func TestSavePickerEditsAndValidatesFileName(t *testing.T) {
+	isolateSettings(t)
+	m := sized(t, newModel(stubExec, nil), 120, 30)
+	r, _ := m.openMenuItem(indexOfAction(m, "backup"))
+	m = asModel(r)
+	m.form.fields[0].picker.InitialDir = t.TempDir()
+	r, _ = m.openFilePicker(0)
+	m = asModel(r)
+	m.picker.saveName.SetValue("backup.json")
+	r, _ = m.closeFilePicker(true)
+	m = asModel(r)
+	if m.picker == nil || !strings.Contains(m.picker.err, ".tdl") {
+		t.Fatalf("wrong extension accepted: picker=%v err=%q", m.picker != nil, m.picker.err)
+	}
+	m.picker.saveName.SetValue("nightly")
+	r, _ = m.closeFilePicker(true)
+	m = asModel(r)
+	if m.picker != nil || !strings.HasSuffix(m.form.fields[0].value(), "nightly.tdl") {
+		t.Fatalf("save name was not applied with extension: %q", m.form.fields[0].value())
+	}
+}
+
 func deliverSelectionScanIgnored(t *testing.T, m *model, cmd tea.Cmd) {
 	t.Helper()
 	msg := cmd()

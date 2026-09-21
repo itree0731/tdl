@@ -91,6 +91,9 @@ func (m model) viewFilePicker() string {
 		rows = append(rows, stErr.Render(fmt.Sprintf(m.lang.t("picker.problems"), len(p.problemPlan.Problems))))
 	} else if p.err != "" {
 		rows = append(rows, stErr.Render(ansi.Truncate(p.err, max(1, width-2), "…")))
+	} else if p.request.Mode == PickSaveFile {
+		p.saveName.Width = max(8, width-20)
+		rows = append(rows, stHint.Render(m.lang.t("picker.save.name")+": ")+stFieldValue.Render(p.saveName.View()))
 	} else {
 		rows = append(rows, stHint.Render(m.lang.t("picker.selected")+" ")+stSys.Render(p.summary()))
 	}

@@ -68,6 +68,41 @@ func TestChatPickerMouseLoadMoreUsesVisibleButton(t *testing.T) {
 	}
 }
 
+func TestChatTopicCanBeSelectedWithMouse(t *testing.T) {
+	isolateSettings(t)
+	m := sized(t, newModel(stubExec, nil), 120, 30)
+	r, _ := m.openMenuItem(indexOfAction(m, "up"))
+	m = asModel(r)
+	m.chatField = 1
+	m.chatPicker = newChatPicker("default", 1)
+	m.screenID = 1
+	m.chatPicker.loading = false
+	m.chatPicker.items = append(m.chatPicker.items, ChatRef{ID: 99, Title: "Forum", Type: "group", Topics: []TopicRef{{ID: 7, Title: "Media"}, {ID: 8, Title: "News"}}})
+	m.chatPicker.filter("")
+	m.chatPicker.cursor = 1
+	frame := m.frame()
+	var topic *HitRegion
+	for i := range frame.Regions {
+		if frame.Regions[i].ID == "chat.topic.next" {
+			topic = &frame.Regions[i]
+			break
+		}
+	}
+	if topic == nil {
+		t.Fatal("topic row has no mouse region")
+	}
+	r, _ = m.Update(tea.MouseMsg{X: topic.Rect.X, Y: topic.Rect.Y, Button: tea.MouseButtonLeft})
+	m = asModel(r)
+	if m.chatPicker.topic != 0 {
+		t.Fatalf("topic index=%d", m.chatPicker.topic)
+	}
+	r, _ = m.closeChatSelector(true)
+	m = asModel(r)
+	if m.form.fields[1].value() != "99" || m.form.fields[2].value() != "7" {
+		t.Fatalf("chat=%q topic=%q", m.form.fields[1].value(), m.form.fields[2].value())
+	}
+}
+
 func (s *memoryChatSource) Page(_ context.Context, namespace string, cursor *ChatCursor, _ int) (ChatPage, error) {
 	if s.calls == nil {
 		s.calls = make(map[string]int)
