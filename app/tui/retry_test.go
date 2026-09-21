@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -91,5 +93,54 @@ func TestUncertainRetryConfirmationHasMouseControls(t *testing.T) {
 	r, _ = m.Update(tea.MouseMsg{X: cancel.Rect.X, Y: cancel.Rect.Y, Button: tea.MouseButtonLeft})
 	if asModel(r).retryPrompt {
 		t.Fatal("mouse cancel did not close retry confirmation")
+	}
+}
+
+func TestCanceledRunContinuesOnlyRemainingUploadPaths(t *testing.T) {
+	isolateSettings(t)
+	argvCh := make(chan []string, 1)
+	exec := func(_ context.Context, argv []string, _ io.Writer) error {
+		argvCh <- append([]string(nil), argv...)
+		return nil
+	}
+	m := sized(t, newModel(exec, nil), 120, 30)
+	m.showOutput = true
+	m.progress.Status = xprogress.StatusCanceled
+	m.currentRun = RunSpec{ActionID: "up", Args: []string{"up", "-p", "done.mp4", "-p", "remaining.mp4"}, Display: RunDisplay{Title: "Upload"}}
+	m.runResult = RunResult{Items: []ItemResult{{DisplayName: "remaining.mp4", SourcePath: "remaining.mp4", Status: string(xprogress.StatusCanceled), Retry: RetryRestartItem}}}
+	r, _ := m.activateButton("run.continue")
+	m = asModel(r)
+	if !m.running {
+		t.Fatal("continue remaining did not start")
+	}
+	select {
+	case argv := <-argvCh:
+		if containsStr(argv, "done.mp4") || !containsStr(argv, "remaining.mp4") {
+			t.Fatalf("continue argv=%v", argv)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("continued executor not invoked")
+	}
+}
+
+func TestCleanupOnlyRetryDeletesWithoutLaunchingUpload(t *testing.T) {
+	isolateSettings(t)
+	path := filepath.Join(t.TempDir(), "uploaded.mp4")
+	if err := os.WriteFile(path, []byte("sent"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	m := newModel(func(context.Context, []string, io.Writer) error { called = true; return nil }, nil)
+	m.showOutput = true
+	m.currentRun = RunSpec{ActionID: "up", Args: []string{"up", "-p", path}}
+	m.progress = xprogress.Snapshot{Status: xprogress.StatusPartial, Failed: 1}
+	m.runResult = RunResult{Items: []ItemResult{{SourcePath: path, Retry: RetryCleanupOnly}}}
+	r, _ := m.retryFailed(false)
+	m = asModel(r)
+	if called || m.running || len(m.runResult.Items) != 0 {
+		t.Fatalf("cleanup retry launched upload or retained failure: called=%v running=%v items=%d", called, m.running, len(m.runResult.Items))
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cleanup did not delete source: %v", err)
 	}
 }

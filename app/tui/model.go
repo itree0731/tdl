@@ -761,6 +761,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.toMenu()
 			case "r":
 				return m.retryFailed(false)
+			case "c":
+				if m.progress.Status == xprogress.StatusCanceled {
+					return m.retryFailed(false)
+				}
 			}
 		}
 		switch msg.String() {
@@ -1941,6 +1945,9 @@ func (m model) viewShortcuts() string {
 		return sc("↑↓", m.lang.t("sc.updown"), "c", m.lang.t("errors.copy"), "r", m.lang.t("errors.retry.all"), "esc", m.lang.t("errors.back"))
 	default:
 		if !m.running {
+			if m.progress.Status == xprogress.StatusCanceled && len(m.runResult.Items) > 0 {
+				return sc("c", m.lang.t("run.continue"), "d", m.lang.t("run.details"), "enter", m.lang.t("form.back"))
+			}
 			if len(m.runResult.Items) > 0 {
 				return sc("r", m.lang.t("run.retry"), "d", m.lang.t("run.details"), "enter", m.lang.t("form.back"))
 			}

@@ -145,6 +145,9 @@ func (m model) runButtons() []uiButton {
 		return m.buttons("run.details", "run.stop")
 	}
 	if len(m.runResult.Items) > 0 {
+		if m.progress.Status == xprogress.StatusCanceled {
+			return m.buttons("run.details", "run.continue", "form.back")
+		}
 		return m.buttons("run.details", "run.failures", "run.retry", "form.back")
 	}
 	return m.buttons("run.details", "form.back")
@@ -173,6 +176,8 @@ func (m model) activateButton(id string) (tea.Model, tea.Cmd) {
 		return m.retryFailed(false)
 	case "run.failures":
 		m.openErrorList()
+	case "run.continue":
+		return m.retryFailed(false)
 	case "form.back":
 		if !m.running {
 			m.toMenu()

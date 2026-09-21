@@ -13,6 +13,7 @@ var uiMessages = map[string][2]string{
 	"run.stop":               {"Stop", "停止"},
 	"run.retry":              {"Retry failed", "重试失败项"},
 	"run.failures":           {"Failures", "失败项"},
+	"run.continue":           {"Continue remaining", "继续剩余"},
 	"run.collapsed":          {"Details collapsed · press d to expand", "详情已折叠 · 按 d 展开"},
 	"run.current":            {"CURRENT ITEM", "当前项目"},
 	"run.stats":              {"TASKS", "任务统计"},
