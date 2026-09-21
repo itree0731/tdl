@@ -6,8 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestNaturalCompare(t *testing.T) {
@@ -157,5 +161,45 @@ func TestUploadPickerProducesExactRepeatedPathArgs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(paths, m.form.fields[0].paths) {
 		t.Fatalf("-p args = %v, want %v; argv=%v", paths, m.form.fields[0].paths, executed)
+	}
+}
+
+func TestFilePickerCanOpenWithEnterAndVisibleMouseButton(t *testing.T) {
+	isolateSettings(t)
+	for _, size := range []struct{ w, h int }{{120, 30}, {80, 24}} {
+		m := sized(t, newModel(stubExec, nil), size.w, size.h)
+		r, _ := m.openMenuItem(indexOfAction(m, "up"))
+		m = asModel(r)
+
+		r, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		opened := asModel(r)
+		if opened.state() != screenFilePicker || opened.running {
+			t.Fatalf("%dx%d enter state=%v running=%v", size.w, size.h, opened.state(), opened.running)
+		}
+
+		m.picker = nil
+		frame := m.frame()
+		var region *HitRegion
+		for i := range frame.Regions {
+			if frame.Regions[i].ID == "picker.open:0" {
+				region = &frame.Regions[i]
+				break
+			}
+		}
+		if region == nil {
+			t.Fatalf("%dx%d has no picker button region", size.w, size.h)
+		}
+		lines := strings.Split(renderPlain(m), "\n")
+		if region.Rect.Y >= len(lines) || !strings.Contains(ansi.Cut(lines[region.Rect.Y], region.Rect.X, region.Rect.X+region.Rect.W), "Select") {
+			t.Fatalf("%dx%d hit region does not cover the rendered Select button: rect=%+v", size.w, size.h, region.Rect)
+		}
+		action, ok := HitTest(frame, region.Rect.X, region.Rect.Y)
+		if !ok || action.ID != "picker.open:0" {
+			t.Fatalf("%dx%d visible picker button is not hittable: %+v %v", size.w, size.h, action, ok)
+		}
+		r, _ = m.Update(tea.MouseMsg{X: region.Rect.X, Y: region.Rect.Y, Button: tea.MouseButtonLeft})
+		if asModel(r).state() != screenFilePicker {
+			t.Fatalf("%dx%d mouse click did not open picker", size.w, size.h)
+		}
 	}
 }

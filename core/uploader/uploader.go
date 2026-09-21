@@ -147,7 +147,7 @@ func (u *Uploader) upload(ctx context.Context, elem Elem) error {
 					if coverErr != nil {
 						return errors.Wrap(coverErr, "prepare video cover")
 					}
-					media = message.Media(buildVideoDocument(f, uploadedThumb, coverPhoto, coverElem.CoverTimestamp(), mime.String(), elem.File().Name(), dur, w, h), caption)
+					media = message.Media(buildVideoDocument(f, uploadedThumb, coverPhoto, mime.String(), elem.File().Name(), dur, w, h), caption)
 				}
 			}
 		}
@@ -183,9 +183,12 @@ func uploadVideoCover(ctx context.Context, client *tg.Client, peer tg.InputPeerC
 	return &tg.InputPhoto{ID: photo.ID, AccessHash: photo.AccessHash, FileReference: photo.FileReference}, nil
 }
 
-func buildVideoDocument(file, thumb tg.InputFileClass, cover *tg.InputPhoto, timestamp int, mime, name string, duration, width, height int) *tg.InputMediaUploadedDocument {
+func buildVideoDocument(file, thumb tg.InputFileClass, cover *tg.InputPhoto, mime, name string, duration, width, height int) *tg.InputMediaUploadedDocument {
 	doc := &tg.InputMediaUploadedDocument{
-		File: file, Thumb: thumb, MimeType: mime, VideoCover: cover, VideoTimestamp: timestamp,
+		// VideoTimestamp is deliberately omitted. Telegram clients may interpret
+		// it as the playback start position. The cover can come from any frame,
+		// while playback must always begin at 0:00.
+		File: file, Thumb: thumb, MimeType: mime, VideoCover: cover,
 		Attributes: []tg.DocumentAttributeClass{
 			&tg.DocumentAttributeFilename{FileName: name},
 			&tg.DocumentAttributeVideo{Duration: float64(duration), W: width, H: height, SupportsStreaming: true},

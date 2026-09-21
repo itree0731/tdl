@@ -22,7 +22,6 @@ type iterElem struct {
 	asPhoto        bool
 	remove         bool
 	temporaryFiles []string
-	coverTimestamp int
 	preparationErr error
 }
 
@@ -43,8 +42,6 @@ func (e *iterElem) Cover() (uploader.File, bool) {
 	}
 	return e.cover, true
 }
-
-func (e *iterElem) CoverTimestamp() int { return e.coverTimestamp }
 
 func (e *iterElem) Caption() (string, []tg.MessageEntityClass) {
 	return e.caption.Complete()

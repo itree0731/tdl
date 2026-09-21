@@ -4,6 +4,7 @@ log
 .vscode
 downloads
 *.exe
+*.exe~
 tdl
 .hugo_build.lock
 .DS_Store

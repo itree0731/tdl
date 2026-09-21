@@ -180,7 +180,6 @@ func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
 		asPhoto:        i.photo,
 		remove:         i.remove,
 		temporaryFiles: temporaryFiles,
-		coverTimestamp: prepared.VideoTimestamp,
 	}, nil
 }
 

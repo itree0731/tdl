@@ -549,6 +549,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		case "enter":
+			if f.picker != nil {
+				return m.openFilePicker(m.formIx)
+			}
+			if f.kind == kChat {
+				return m.openChatSelector(m.formIx)
+			}
+			return m.launchForm()
+		case "ctrl+enter":
 			return m.launchForm()
 		case "esc":
 			if m.isSetting && m.settingsDirty {
@@ -1388,10 +1396,12 @@ func (m model) hitRegions() []HitRegion {
 			y := m.contentTop() + 2 + i - first
 			regions = append(regions, HitRegion{ID: fmt.Sprintf("field:%d", i), Rect: Rect{X: x, Y: y, W: m.contentWidth(), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionField, Index: i}})
 			if m.form.fields[i].picker != nil {
-				regions = append(regions, HitRegion{ID: fmt.Sprintf("picker.open:%d", i), Rect: Rect{X: max(x, m.width-12), Y: y, W: min(12, m.contentWidth()), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("picker.open:%d", i)}})
+				buttonW := lipgloss.Width(m.selectorButtonText(&m.form.fields[i]))
+				regions = append(regions, HitRegion{ID: fmt.Sprintf("picker.open:%d", i), Rect: Rect{X: max(x, m.width-buttonW-1), Y: y, W: min(buttonW, m.contentWidth()), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("picker.open:%d", i)}})
 			}
 			if m.form.fields[i].kind == kChat {
-				regions = append(regions, HitRegion{ID: fmt.Sprintf("chat.open:%d", i), Rect: Rect{X: max(x, m.width-12), Y: y, W: min(12, m.contentWidth()), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("chat.open:%d", i)}})
+				buttonW := lipgloss.Width(m.selectorButtonText(&m.form.fields[i]))
+				regions = append(regions, HitRegion{ID: fmt.Sprintf("chat.open:%d", i), Rect: Rect{X: max(x, m.width-buttonW-1), Y: y, W: min(buttonW, m.contentWidth()), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("chat.open:%d", i)}})
 			}
 		}
 	}
@@ -1413,6 +1423,14 @@ func (m model) hitRegions() []HitRegion {
 		regions = append(regions, HitRegion{ID: "button:" + b.id, Rect: Rect{X: b.x0, Y: b.y, W: b.x1 - b.x0, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: b.id}})
 	}
 	return regions
+}
+
+func (m model) selectorButtonText(f *field) string {
+	label := m.lang.t("picker.select")
+	if f != nil && f.kind == kChat {
+		label = m.lang.t("chat.select")
+	}
+	return "[ " + label + " ]"
 }
 
 func (m model) formFields() []field {
@@ -1467,11 +1485,7 @@ func (m model) viewForm() string {
 				display = localizedPlaceholder(m.lang, f.placeholder)
 			}
 			budget := max(8, width-lipgloss.Width(f.label(m.lang))-20)
-			button := m.lang.t("picker.select")
-			if f.kind == kChat {
-				button = m.lang.t("chat.select")
-			}
-			value = stFieldValue.Render(ansi.Truncate(display, budget, "…")) + "  " + stFieldFocus.Render("["+button+"]")
+			value = stFieldValue.Render(ansi.Truncate(display, budget, "…"))
 		default:
 			input := f.ti
 			input.Placeholder = localizedPlaceholder(m.lang, f.placeholder)
@@ -1482,7 +1496,11 @@ func (m model) viewForm() string {
 			cursor = stFieldFocus.Render("▸ ")
 			label = stFieldFocus.Render(f.label(m.lang))
 		}
-		rows = append(rows, ansi.Truncate(cursor+label+": "+value, max(1, width-2), "…"))
+		row := cursor + label + ": " + value
+		if f.picker != nil || f.kind == kChat {
+			row = joinEdges(row, stFieldFocus.Render(m.selectorButtonText(f)), max(1, width-2))
+		}
+		rows = append(rows, ansi.Truncate(row, max(1, width-2), "…"))
 	}
 	body := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return lipgloss.NewStyle().Width(width).Height(m.mainHeight()).Padding(0, 1).Render(body)
@@ -1539,6 +1557,12 @@ func (m model) viewShortcuts() string {
 	case stateForm:
 		if m.isSetting {
 			return sc("tab", m.lang.t("sc.updown"), "enter", m.lang.t("set.apply"), "esc", m.lang.t("form.back"))
+		}
+		if m.form != nil && m.formIx >= 0 && m.formIx < len(m.form.fields) {
+			f := &m.form.fields[m.formIx]
+			if f.picker != nil || f.kind == kChat {
+				return sc("↑↓/tab", m.lang.t("sc.updown"), "enter", m.lang.t("picker.select"), "ctrl+enter", m.lang.t("form.run"), "esc", m.lang.t("form.back"))
+			}
 		}
 		return sc("↑↓/tab", m.lang.t("sc.updown"), "space", m.lang.t("sc.space"), "enter", m.lang.t("form.run"), "esc", m.lang.t("form.back"))
 	case screenFilePicker:

@@ -39,5 +39,4 @@ type PreparedElem interface {
 // separate from Thumb because Telegram stores the two in different fields.
 type CoverElem interface {
 	Cover() (File, bool)
-	CoverTimestamp() int
 }
