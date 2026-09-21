@@ -1,0 +1,9 @@
+{
+  "name": "tdl-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {"dev": "vite", "build": "tsc && vite build"},
+  "dependencies": {"@vitejs/plugin-react": "latest", "vite": "8.3.0", "typescript": "7.0.2", "react": "19.3.0", "react-dom": "19.3.0", "lucide-react": "latest"},
+  "devDependencies": {"@types/react": "latest", "@types/react-dom": "latest"}
+}
