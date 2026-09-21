@@ -1,0 +1,16 @@
+{
+  "fixed": {
+    "file_version": "0.1.0.0",
+    "product_version": "0.1.0.0"
+  },
+  "info": {
+    "0409": {
+      "ProductVersion": "0.1.0",
+      "CompanyName": "TMT",
+      "FileDescription": "TMT Telegram Media Transfer",
+      "LegalCopyright": "AGPL-3.0",
+      "ProductName": "TMT",
+      "Comments": "Telegram media upload, download, forwarding and account tools"
+    }
+  }
+}

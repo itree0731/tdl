@@ -31,6 +31,9 @@ type App struct {
 	settingsErr  error
 	tasks        []TaskRecord
 	nextTaskID   int64
+	loginCancel  context.CancelFunc
+	loginPass    chan string
+	loginRunning bool
 }
 type Capabilities struct {
 	Product       string `json:"product"`
@@ -118,7 +121,7 @@ func (a *App) GetSettings() (DesktopSettings, error) {
 
 func (a *App) SaveSettings(settings DesktopSettings) (DesktopSettings, error) {
 	a.mu.Lock()
-	if a.running || a.chatLoading || a.settingsBusy {
+	if a.running || a.chatLoading || a.settingsBusy || a.loginRunning {
 		a.mu.Unlock()
 		return DesktopSettings{}, fmt.Errorf("当前有任务正在运行，不能保存设置")
 	}
@@ -165,6 +168,10 @@ func (a *App) ChatPage(namespace string, cursor, limit int) (ChatPage, error) {
 	if a.running {
 		a.mu.Unlock()
 		return ChatPage{}, fmt.Errorf("传输运行时不能加载会话")
+	}
+	if a.loginRunning {
+		a.mu.Unlock()
+		return ChatPage{}, fmt.Errorf("登录期间不能加载会话")
 	}
 	a.chatLoading = true
 	defer func() {
@@ -249,6 +256,10 @@ func (a *App) StartDownload(req DownloadRequest) (StartResult, error) {
 }
 
 func (a *App) startTransfer(direction string, args []string, detail string) (StartResult, error) {
+	return a.startTransferCommands(direction, [][]string{args}, detail, nil)
+}
+
+func (a *App) startTransferCommands(direction string, commands [][]string, detail string, cleanup func()) (StartResult, error) {
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
@@ -262,6 +273,10 @@ func (a *App) startTransfer(direction string, args []string, detail string) (Sta
 		a.mu.Unlock()
 		return StartResult{}, fmt.Errorf("正在保存设置，请稍后开始传输")
 	}
+	if a.loginRunning {
+		a.mu.Unlock()
+		return StartResult{}, fmt.Errorf("登录进行中，请先完成或取消登录")
+	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.cancel, a.running = cancel, true
 	a.nextTaskID++
@@ -272,7 +287,7 @@ func (a *App) startTransfer(direction string, args []string, detail string) (Sta
 	}
 	a.mu.Unlock()
 	runtime.EventsEmit(a.ctx, "tasks:changed", a.TaskHistory())
-	go a.runTransfer(ctx, direction, args, taskID)
+	go a.runTransfer(ctx, direction, commands, taskID, cleanup)
 	message := operationLabel(direction) + "任务已启动"
 	return StartResult{true, message}, nil
 }
@@ -286,7 +301,10 @@ func (a *App) StopTransfer() bool {
 	return true
 }
 
-func (a *App) runTransfer(ctx context.Context, direction string, args []string, taskID int64) {
+func (a *App) runTransfer(ctx context.Context, direction string, commands [][]string, taskID int64, cleanup func()) {
+	if cleanup != nil {
+		defer cleanup()
+	}
 	collector := xprogress.NewCollector()
 	ctx = xprogress.WithSink(ctx, collector)
 	stopUpdates := make(chan struct{})
@@ -307,11 +325,16 @@ func (a *App) runTransfer(ctx context.Context, direction string, args []string, 
 			}
 		}
 	}()
-	root := tdlcmd.New()
-	root.SetArgs(args)
-	root.SetOut(io.Discard)
-	root.SetErr(io.Discard)
-	err := root.ExecuteContext(ctx)
+	var err error
+	for _, args := range commands {
+		root := tdlcmd.New()
+		root.SetArgs(args)
+		root.SetOut(io.Discard)
+		root.SetErr(io.Discard)
+		if err = root.ExecuteContext(ctx); err != nil {
+			break
+		}
+	}
 	close(stopUpdates)
 	<-done
 	final := collector.FinishContext(ctx, err)

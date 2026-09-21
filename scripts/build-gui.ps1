@@ -22,10 +22,13 @@ finally {
     Pop-Location
 }
 
-Push-Location $repoRoot
+Push-Location (Join-Path $repoRoot 'gui')
 try {
-    go build -tags production -trimpath -ldflags '-s -w -H windowsgui' -o $outputPath ./gui
-    if ($LASTEXITCODE -ne 0) { throw "GUI Go 构建失败" }
+    go run github.com/wailsapp/wails/v2/cmd/wails@v2.16.0 build -s -m -clean -skipbindings -trimpath -o tmt-gui.exe -ldflags '-s -w'
+    if ($LASTEXITCODE -ne 0) { throw "Wails GUI 构建失败" }
+    $builtBinary = Join-Path (Get-Location) 'build\bin\tmt-gui.exe'
+    if (-not (Test-Path -LiteralPath $builtBinary)) { throw "Wails 未生成 tmt-gui.exe" }
+    Copy-Item -LiteralPath $builtBinary -Destination $outputPath -Force
 }
 finally {
     Pop-Location

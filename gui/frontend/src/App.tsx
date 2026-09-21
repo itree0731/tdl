@@ -7,6 +7,7 @@ import {
   Clock3,
   Database,
   FolderOpen,
+  LogIn,
   MessageSquare,
   RefreshCcw,
   Search,
@@ -75,7 +76,7 @@ const emptySnapshot: Snapshot = {
 
 const savedMessages: ChatRef = {id: 0, username: '', title: 'Saved Messages', type: 'self', topics: [], self: true};
 const defaultSettings: DesktopSettings = {schemaVersion: 1, namespace: 'default', proxy: '', threads: 4, limit: 2, downloadDirectory: 'downloads', coverMode: 'video-cover', coverAt: 'auto', downloadGroup: true, downloadSkipSame: true, downloadRewrite: false};
-type WorkspacePage = 'upload' | 'download' | 'forward' | 'chat' | 'tasks' | 'backup' | 'recover' | 'settings';
+type WorkspacePage = 'upload' | 'download' | 'forward' | 'chat' | 'tasks' | 'backup' | 'recover' | 'login' | 'settings';
 const nav = [
   [Upload, '上传', 'upload'],
   [ArrowDownToLine, '下载', 'download'],
@@ -84,6 +85,7 @@ const nav = [
   [ArrowUpFromLine, '任务', 'tasks'],
   [Database, '备份', 'backup'],
   [RefreshCcw, '恢复', 'recover'],
+  [LogIn, '登录', 'login'],
   [Settings, '设置', 'settings'],
 ] as const;
 
@@ -93,6 +95,10 @@ export function App() {
   const [previewError, setPreviewError] = useState('');
   const [activePage, setActivePage] = useState<WorkspacePage>('upload');
   const [downloadInput, setDownloadInput] = useState('');
+  const [downloadMode, setDownloadMode] = useState<'links' | 'chat'>('links');
+  const [downloadChat, setDownloadChat] = useState<ChatRef>(savedMessages);
+  const [downloadTopic, setDownloadTopic] = useState<TopicRef | null>(null);
+  const [downloadLast, setDownloadLast] = useState(100);
   const [downloadFiles, setDownloadFiles] = useState<string[]>([]);
   const [downloadDirectory, setDownloadDirectory] = useState('downloads');
   const [downloadGroup, setDownloadGroup] = useState(true);
@@ -114,6 +120,12 @@ export function App() {
   const [chatExportContent, setChatExportContent] = useState(false);
   const [backupPath, setBackupPath] = useState('');
   const [recoveryPath, setRecoveryPath] = useState('');
+  const [loginNamespace, setLoginNamespace] = useState('account-2');
+  const [loginQR, setLoginQR] = useState('');
+  const [loginStatus, setLoginStatus] = useState('');
+  const [loginNeedsPassword, setLoginNeedsPassword] = useState(false);
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginRunning, setLoginRunning] = useState(false);
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [namespace, setNamespace] = useState('default');
   const [running, setRunning] = useState(false);
@@ -158,12 +170,20 @@ export function App() {
       setOperationStatus(value.error ? `操作失败：${value.error}` : '操作已完成');
     });
     const offTasks = window.runtime?.EventsOn('tasks:changed', (value: TaskRecord[]) => setTasks(value || []));
+    const offLoginQR = window.runtime?.EventsOn('login:qr', (value: string) => {setLoginQR(value);setLoginStatus('请使用 Telegram 手机客户端扫描二维码')});
+    const offLoginPassword = window.runtime?.EventsOn('login:password-required', () => {setLoginNeedsPassword(true);setLoginStatus('此账号启用了两步验证，请输入密码')});
+    const offLoginDone = window.runtime?.EventsOn('login:done', async (value: {namespace:string;username:string}) => {setLoginRunning(false);setLoginNeedsPassword(false);setLoginQR('');setLoginStatus(`登录成功${value.username ? ` · @${value.username}` : ''}`);const values=await window.go.main.App.Namespaces();setNamespaces(values);setNamespace(value.namespace)});
+    const offLoginError = window.runtime?.EventsOn('login:error', (value: {error:string}) => {setLoginRunning(false);setLoginNeedsPassword(false);setLoginStatus(`登录失败：${value.error}`)});
     window.go?.main.App.TaskHistory().then(setTasks).catch(() => undefined);
     return () => {
       offSnapshot?.();
       offItems?.();
       offDone?.();
       offTasks?.();
+      offLoginQR?.();
+      offLoginPassword?.();
+      offLoginDone?.();
+      offLoginError?.();
     };
   }, []);
 
@@ -201,7 +221,7 @@ export function App() {
       setSettingsDraft(settings);
       setSettingsStatus('');
     }
-    if ((page === 'chat' || page === 'forward') && !chatItems.length && !chatLoading) void loadChats(0, true);
+    if ((page === 'chat' || page === 'forward' || page === 'download') && !chatItems.length && !chatLoading) void loadChats(0, true);
     if (page === 'tasks') void window.go.main.App.TaskHistory().then(setTasks);
     setActivePage(page);
     setError('');
@@ -213,7 +233,7 @@ export function App() {
   async function pickFiles() {
     const value = await window.go.main.App.SelectUploadFiles();
     if (value?.length) {
-      setPaths(value);
+      setPaths((current) => mergePaths(current, value));
       await loadMediaPreview(value);
     }
   }
@@ -221,7 +241,7 @@ export function App() {
   async function pickDirectory() {
     const value = await window.go.main.App.SelectUploadDirectory();
     if (value) {
-      setPaths([value]);
+      setPaths((current) => mergePaths(current, [value]));
       await loadMediaPreview([value]);
     }
   }
@@ -325,18 +345,11 @@ export function App() {
     setSnap(emptySnapshot);
     setItems([]);
     try {
-      await window.go.main.App.StartDownload({
-        namespace,
-        proxy: settings.proxy,
-        urls: downloadURLs,
-        files: downloadFiles,
-        directory: downloadDirectory,
-        threads: settings.threads,
-        limit: settings.limit,
-        group: downloadGroup,
-        skipSame: downloadSkipSame,
-        rewrite: downloadRewrite,
-      });
+      if (downloadMode === 'chat') {
+        await window.go.main.App.StartChatDownload({namespace, proxy: settings.proxy, chat: downloadChat.self ? '' : String(downloadChat.id), topic: downloadTopic?.id || 0, last: downloadLast, directory: downloadDirectory, threads: settings.threads, limit: settings.limit, group: downloadGroup, skipSame: downloadSkipSame, rewrite: downloadRewrite});
+      } else {
+        await window.go.main.App.StartDownload({namespace, proxy: settings.proxy, urls: downloadURLs, files: downloadFiles, directory: downloadDirectory, threads: settings.threads, limit: settings.limit, group: downloadGroup, skipSame: downloadSkipSame, rewrite: downloadRewrite});
+      }
       setRunning(true);
     } catch (reason) {
       setError(errorText(reason));
@@ -406,22 +419,58 @@ export function App() {
     }
   }
 
+  async function startQRLogin() {
+    setLoginQR('');
+    setLoginNeedsPassword(false);
+    setLoginStatus('正在连接 Telegram…');
+    setLoginRunning(true);
+    try {
+      await window.go.main.App.StartQRLogin(loginNamespace, settings.proxy);
+    } catch (reason) {
+      setLoginRunning(false);
+      setLoginStatus(errorText(reason));
+    }
+  }
+
+  async function submitLoginPassword() {
+    try {
+      await window.go.main.App.SubmitLoginPassword(loginPassword);
+      setLoginStatus('正在验证两步验证密码…');
+    } catch (reason) {
+      setLoginStatus(errorText(reason));
+    }
+  }
+
+  async function cancelLogin() {
+    await window.go.main.App.CancelLogin();
+    setLoginRunning(false);
+    setLoginNeedsPassword(false);
+    setLoginQR('');
+    setLoginStatus('登录已取消');
+  }
+
   return (
     <main className="shell">
       <aside className="sidebar">
         <section className="brand"><strong>TMT</strong><span>Telegram Media Transfer</span></section>
-        <nav>{nav.map(([Icon, label, page]) => <button disabled={!page || running} title={!page ? '后续阶段实现' : ''} className={page === activePage ? 'active' : ''} key={label} onClick={() => page && switchPage(page)}><Icon size={21}/><span>{label}</span></button>)}</nav>
+        <nav>{nav.map(([Icon, label, page]) => <button disabled={!page || running || loginRunning} title={!page ? '后续阶段实现' : ''} className={page === activePage ? 'active' : ''} key={label} onClick={() => page && switchPage(page)}><Icon size={21}/><span>{label}</span></button>)}</nav>
       </aside>
 
       <section className="workspace">
         <header className="session">
           <span>工作区：<b>{pageLabel(activePage)}</b></span><i/>
-          <span>账号：<select disabled={running || chatLoading || activePage === 'settings'} value={namespace} onChange={(event) => setNamespace(event.target.value)}>{namespaces.map((value) => <option key={value}>{value}</option>)}</select></span><i/>
+          <span>账号：<select disabled={running || loginRunning || chatLoading || activePage === 'settings'} value={namespace} onChange={(event) => setNamespace(event.target.value)}>{namespaces.map((value) => <option key={value}>{value}</option>)}</select></span><i/>
           <span>状态：<mark>● {running ? '传输中' : '就绪'}</mark></span>
           <time>{new Date().toLocaleString()}</time>
         </header>
 
-        {activePage === 'settings' ? <article className="settings-page card">
+        {activePage === 'login' ? <article className="tool-page login-page card">
+          <header><div><small>TELEGRAM LOGIN</small><h1>登录 Telegram</h1><p>创建一个新的本地账号命名空间，然后使用手机 Telegram 扫码授权。</p></div><LogIn size={34}/></header>
+          <div className="login-body">
+            <section className="login-controls"><label>账号名称<input disabled={loginRunning} value={loginNamespace} onChange={(event) => setLoginNamespace(event.target.value)} placeholder="例如 work-account"/></label><small>仅用于在本机区分多个 Telegram 账号。</small>{!loginRunning ? <button className="apply" onClick={startQRLogin}>生成登录二维码</button> : <button className="danger" onClick={cancelLogin}>取消登录</button>}{loginNeedsPassword && <div className="login-password"><label>两步验证密码<input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)}/></label><button className="apply" onClick={submitLoginPassword}>提交密码</button></div>}<p>{loginStatus || '准备就绪'}</p></section>
+            <section className="qr-stage">{loginQR ? <img src={loginQR} alt="Telegram 登录二维码"/> : <div><LogIn size={58}/><span>二维码会显示在这里</span></div>}</section>
+          </div>
+        </article> : activePage === 'settings' ? <article className="settings-page card">
           <header><div><small>DESKTOP PREFERENCES</small><h1>全局设置</h1><p>这些值会应用到之后启动的上传和下载任务。保存失败时，当前生效值不会改变。</p></div><Settings size={34}/></header>
           <div className="settings-grid">
             <label><span>默认账号<small>新任务默认使用的 Telegram 命名空间</small></span><select value={settingsDraft.namespace} onChange={(event) => setSettingsDraft({...settingsDraft, namespace: event.target.value})}>{namespaces.map((value) => <option key={value}>{value}</option>)}</select></label>
@@ -458,14 +507,14 @@ export function App() {
           <header><div><small>ACCOUNT RECOVERY</small><h1>恢复账号数据</h1><p>支持新的 .tmt 备份和旧版 .tdl 备份。执行前会再次确认覆盖风险。</p></div><RefreshCcw size={34}/></header>
           <div className="single-operation warning"><RefreshCcw size={52}/><h2>选择备份文件</h2><div className="path-setting"><input readOnly value={recoveryPath} placeholder="选择 .tmt 或 .tdl 文件"/><button onClick={pickRecoveryFile}><FolderOpen size={16}/>选择</button></div><button className="apply" disabled={!recoveryPath || running} onClick={startRecovery}>确认并恢复</button><p>{operationStatus}</p></div>
         </article> : <>
-        <div className="overview">
+        <div className={`overview ${activePage === 'upload' ? 'upload-overview' : ''}`}>
           <article className="media card">
             <label>{activePage === 'upload' ? 'CURRENT MEDIA' : 'DOWNLOAD SOURCE'}</label>
             {activePage === 'upload'
               ? <div className={`cover preview-cover ${preview ? 'has-preview' : ''}`}>
                   {preview ? <><img src={preview.dataURL} alt={preview.name}/><span className="preview-kind">{preview.kind === 'video' ? 'VIDEO' : 'IMAGE'}</span><small>{preview.name}<br/>{preview.width}×{preview.height}</small></> : <><FolderOpen size={34}/><span>MEDIA</span><small>{previewError || '选择图片或视频后显示预览'}</small></>}
                 </div>
-              : <div className="cover download-cover"><ArrowDownToLine size={32}/><span>LINKS</span><small>{downloadURLs.length} 个链接 · {downloadFiles.length} 个导出文件</small></div>}
+              : <div className="cover download-cover"><ArrowDownToLine size={32}/><span>{downloadMode === 'chat' ? 'CHAT' : 'LINKS'}</span><small>{downloadMode === 'chat' ? `${downloadChat.title} · 最近 ${downloadLast} 条` : `${downloadURLs.length} 个链接 · ${downloadFiles.length} 个导出文件`}</small></div>}
           </article>
 
           <article className="task card">
@@ -474,11 +523,12 @@ export function App() {
               <h1>{snap.CurrentFile || paths[0]?.split(/[\\/]/).pop() || '选择要上传的文件'}</h1>
               <p>{paths.length ? `已选择 ${paths.length} 项` : '支持文件和目录 · 视频默认生成高清封面'}</p>
               <div className="target-row"><span>发送到</span><button disabled={running} onClick={openChatSelector}><MessageSquare size={15}/>{targetLabel}</button></div>
-              <div className="picker"><button disabled={running} onClick={pickFiles}>选择文件</button><button disabled={running} onClick={pickDirectory}>选择目录</button><button className="primary" disabled={!paths.length || running} onClick={startUpload}>开始上传</button></div>
+              <div className="picker"><button disabled={running} onClick={pickFiles}>追加文件</button><button disabled={running} onClick={pickDirectory}>追加目录</button>{paths.length > 0 && <button disabled={running} onClick={() => {setPaths([]);setPreview(null);setPreviewError('')}}>清空</button>}<button className="primary" disabled={!paths.length || running} onClick={startUpload}>开始上传</button></div>
             </> : <>
-              <textarea className="download-input" disabled={running} value={downloadInput} onChange={(event) => setDownloadInput(event.target.value)} placeholder={'粘贴 Telegram 消息链接，每行一个\n例如：https://t.me/c/123456/789'}/>
-              <div className="download-destination"><span>保存到</span><button disabled={running} onClick={pickDownloadDirectory}><FolderOpen size={15}/><b>{downloadDirectory}</b></button><button disabled={running} onClick={pickDownloadFiles}>导入 JSON</button></div>
-              <div className="download-options"><label><input type="checkbox" checked={downloadGroup} onChange={(event) => setDownloadGroup(event.target.checked)}/> 自动下载媒体组</label><label><input type="checkbox" checked={downloadSkipSame} onChange={(event) => setDownloadSkipSame(event.target.checked)}/> 跳过同名同大小</label><label><input type="checkbox" checked={downloadRewrite} onChange={(event) => setDownloadRewrite(event.target.checked)}/> 修正扩展名</label><button className="primary" disabled={(!downloadURLs.length && !downloadFiles.length) || running} onClick={startDownload}>开始下载</button></div>
+              <div className="download-source-tabs"><button className={downloadMode === 'links' ? 'active' : ''} onClick={() => setDownloadMode('links')}>链接 / JSON</button><button className={downloadMode === 'chat' ? 'active' : ''} onClick={() => setDownloadMode('chat')}>群组 / 频道</button></div>
+              {downloadMode === 'links' ? <textarea className="download-input" disabled={running} value={downloadInput} onChange={(event) => setDownloadInput(event.target.value)} placeholder={'粘贴 Telegram 消息链接，每行一个\n例如：https://t.me/c/123456/789'}/> : <div className="chat-download-source"><select disabled={running || chatLoading} value={chatKey(downloadChat)} onChange={(event) => {const entry = [savedMessages, ...chatItems].find((item) => chatKey(item) === event.target.value) || savedMessages;setDownloadChat(entry);setDownloadTopic(null)}}><option value="self">Saved Messages</option>{chatItems.filter((entry) => !entry.self).map((entry) => <option key={chatKey(entry)} value={chatKey(entry)}>{entry.title || entry.username} · {typeLabel(entry.type)}</option>)}</select>{downloadChat.topics.length > 0 && <select disabled={running} value={downloadTopic?.id || 0} onChange={(event) => setDownloadTopic(downloadChat.topics.find((topic) => topic.id === Number(event.target.value)) || null)}><option value="0">全部话题</option>{downloadChat.topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.title}</option>)}</select>}<label>下载最近<input type="number" min="1" max="100000" value={downloadLast} onChange={(event) => setDownloadLast(Number(event.target.value))}/>条消息中的媒体</label></div>}
+              <div className="download-destination"><span>保存到</span><button disabled={running} onClick={pickDownloadDirectory}><FolderOpen size={15}/><b>{downloadDirectory}</b></button>{downloadMode === 'links' && <button disabled={running} onClick={pickDownloadFiles}>导入 JSON</button>}</div>
+              <div className="download-options"><label><input type="checkbox" checked={downloadGroup} onChange={(event) => setDownloadGroup(event.target.checked)}/> 自动下载媒体组</label><label><input type="checkbox" checked={downloadSkipSame} onChange={(event) => setDownloadSkipSame(event.target.checked)}/> 跳过同名同大小</label><label><input type="checkbox" checked={downloadRewrite} onChange={(event) => setDownloadRewrite(event.target.checked)}/> 修正扩展名</label><button className="primary" disabled={(downloadMode === 'links' && !downloadURLs.length && !downloadFiles.length) || running} onClick={startDownload}>开始下载</button></div>
             </>}
             <div className={`progress ${knownTotal ? '' : 'indeterminate'}`}><span style={knownTotal ? {width: `${pct}%`} : undefined}/><b>{knownTotal ? `${pct.toFixed(1)}%` : '--'}</b></div>
             <p>{activePage === 'upload' ? '已上传' : '已下载'}&nbsp; <strong>{bytes(snap.CompletedBytes)} / {knownTotal ? bytes(snap.TotalBytes) : '--'}</strong></p>
@@ -554,10 +604,19 @@ function uniqueChats(items: ChatRef[]) {
     return true;
   });
 }
+function mergePaths(current: string[], added: string[]) {
+  const seen = new Set(current.map((value) => value.toLocaleLowerCase()));
+  return [...current, ...added.filter((value) => {
+    const key = value.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  })];
+}
 function chatKey(chat: ChatRef) { return chat.self ? 'self' : `${chat.type}:${chat.id}`; }
 function sameChat(a: ChatRef, b: ChatRef) { return chatKey(a) === chatKey(b); }
 function typeLabel(type: string) { return ({private: '私聊', group: '群组', channel: '频道', self: '收藏夹'} as Record<string, string>)[type] || type; }
-function pageLabel(page: WorkspacePage) { return ({upload: '上传', download: '下载', forward: '转发', chat: '会话', tasks: '任务', backup: '备份', recover: '恢复', settings: '设置'} as Record<WorkspacePage, string>)[page]; }
+function pageLabel(page: WorkspacePage) { return ({upload: '上传', download: '下载', forward: '转发', chat: '会话', tasks: '任务', backup: '备份', recover: '恢复', login: '登录', settings: '设置'} as Record<WorkspacePage, string>)[page]; }
 function operationLabel(type: string) { return ({upload: '上传', download: '下载', forward: '转发', 'chat-export': '会话导出', backup: '备份', recover: '恢复'} as Record<string, string>)[type] || type; }
 function statusLabel(status: string) { return ({queued: '排队', running: '运行', done: '完成', failed: '失败', canceled: '取消', skipped: '跳过', partial_failure: '部分失败'} as Record<string, string>)[status] || status || '等待'; }
 function resultLabel(status: string) { return ({done: '任务完成', failed: '任务失败', canceled: '任务已取消', partial_failure: '任务部分失败'} as Record<string, string>)[status] || '任务结束'; }

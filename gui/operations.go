@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 
@@ -41,6 +42,20 @@ type ChatExportRequest struct {
 	Output      string `json:"output"`
 	WithContent bool   `json:"withContent"`
 	All         bool   `json:"all"`
+}
+
+type ChatDownloadRequest struct {
+	Namespace string `json:"namespace"`
+	Proxy     string `json:"proxy"`
+	Chat      string `json:"chat"`
+	Topic     int    `json:"topic"`
+	Last      int    `json:"last"`
+	Directory string `json:"directory"`
+	Threads   int    `json:"threads"`
+	Limit     int    `json:"limit"`
+	Rewrite   bool   `json:"rewrite"`
+	SkipSame  bool   `json:"skipSame"`
+	Group     bool   `json:"group"`
 }
 
 func (a *App) TaskHistory() []TaskRecord {
@@ -149,6 +164,37 @@ func (a *App) StartChatExport(req ChatExportRequest) (StartResult, error) {
 		return StartResult{}, fmt.Errorf("请选择导出文件")
 	}
 	return a.startTransfer("chat-export", buildChatExportArgs(req), req.Output)
+}
+
+func (a *App) StartChatDownload(req ChatDownloadRequest) (StartResult, error) {
+	if req.Last < 1 || req.Last > 100000 {
+		return StartResult{}, fmt.Errorf("下载消息数必须在 1 到 100000 之间")
+	}
+	if req.Directory == "" {
+		return StartResult{}, fmt.Errorf("请选择下载目录")
+	}
+	temp, err := os.CreateTemp("", "tmt-chat-download-*.json")
+	if err != nil {
+		return StartResult{}, err
+	}
+	path := temp.Name()
+	if err = temp.Close(); err != nil {
+		_ = os.Remove(path)
+		return StartResult{}, err
+	}
+	exportArgs := buildChatExportArgs(ChatExportRequest{
+		Namespace: req.Namespace, Proxy: req.Proxy, Chat: req.Chat, Topic: req.Topic,
+		Last: req.Last, Output: path,
+	})
+	downloadArgs := buildDownloadArgs(DownloadRequest{
+		Namespace: req.Namespace, Proxy: req.Proxy, Files: []string{path}, Directory: req.Directory,
+		Threads: req.Threads, Limit: req.Limit, Rewrite: req.Rewrite, SkipSame: req.SkipSame, Group: req.Group,
+	})
+	result, startErr := a.startTransferCommands("download", [][]string{exportArgs, downloadArgs}, fmt.Sprintf("会话最近 %d 条消息", req.Last), func() { _ = os.Remove(path) })
+	if startErr != nil {
+		_ = os.Remove(path)
+	}
+	return result, startErr
 }
 
 func (a *App) StartBackup(path string) (StartResult, error) {

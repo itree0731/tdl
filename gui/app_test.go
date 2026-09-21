@@ -49,3 +49,13 @@ func TestBuildChatExportArgsUsesLastRange(t *testing.T) {
 		t.Fatalf("args=%v\nwant=%v", got, want)
 	}
 }
+
+func TestStartChatDownloadValidatesBeforeCreatingTemporaryExport(t *testing.T) {
+	app := NewApp()
+	if _, err := app.StartChatDownload(ChatDownloadRequest{Last: 0, Directory: t.TempDir()}); err == nil {
+		t.Fatal("expected invalid last count error")
+	}
+	if _, err := app.StartChatDownload(ChatDownloadRequest{Last: 10}); err == nil {
+		t.Fatal("expected missing directory error")
+	}
+}
