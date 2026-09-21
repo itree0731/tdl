@@ -33,12 +33,11 @@ var (
 	errNamespaceNoSession    = errors.New("namespace has no session")
 )
 
-// NewTUI creates the `tdl tui` command: a fullscreen, mouse-interactive
-// shell around tdl's own commands, styled after xai-org/grok-build.
+// NewTUI creates the fullscreen, mouse-interactive tdl transfer workbench.
 func NewTUI() *cobra.Command {
 	return &cobra.Command{
 		Use:     "tui",
-		Short:   "Interactive TUI for tdl (grok-build style)",
+		Short:   "Interactive media transfer workbench for tdl",
 		GroupID: groupTools.ID,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			stg := kv.From(cmd.Context())

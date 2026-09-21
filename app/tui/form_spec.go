@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -243,7 +245,40 @@ func (a action) formSpec() FormSpec {
 			HelpKey: f.helpKey, Flag: f.flag, Choices: choices, DefaultText: f.def, Picker: f.picker,
 		})
 	}
-	return FormSpec{ID: a.id, BaseArgs: append([]string(nil), a.base...), Fields: fields}
+	spec := FormSpec{ID: a.id, BaseArgs: append([]string(nil), a.base...), Fields: fields}
+	spec.Validate = func(values FormValues) []FieldError {
+		var errs []FieldError
+		switch a.id {
+		case "up":
+			if len(values.Strings("p")) == 0 {
+				errs = append(errs, FieldError{FieldID: "p", Message: "select at least one upload file"})
+			}
+			if values.String("topic") != "" && values.String("c") == "" {
+				errs = append(errs, FieldError{FieldID: "topic", Message: "chat is required when topic is set"})
+			}
+			if values.String("c") != "" && values.String("to") != "" {
+				errs = append(errs, FieldError{FieldID: "c", Message: "chat and router destination cannot be combined"})
+			}
+		case "dl":
+			if values.String("u") == "" && len(values.Strings("f")) == 0 {
+				errs = append(errs, FieldError{FieldID: "u", Message: "enter a message URL or select an export file"})
+			}
+		case "recover":
+			if path := values.String("f"); path != "" {
+				if info, err := os.Stat(path); err != nil || info.IsDir() {
+					errs = append(errs, FieldError{FieldID: "f", Message: "backup file does not exist"})
+				}
+			}
+		case "backup":
+			if path := values.String("d"); path != "" {
+				if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
+					errs = append(errs, FieldError{FieldID: "d", Message: "destination directory does not exist"})
+				}
+			}
+		}
+		return errs
+	}
+	return spec
 }
 
 func (a action) formValues() FormValues {

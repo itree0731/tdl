@@ -27,6 +27,8 @@ func (m model) currentPage() string {
 		return m.viewChatPicker()
 	case screenConfirm:
 		return m.viewRetryConfirm()
+	case screenErrorList:
+		return m.viewErrorList()
 	default:
 		return m.viewRun()
 	}

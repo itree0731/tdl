@@ -250,6 +250,7 @@ func TestWideFormFooterButtonsAreVisibleAndClickable(t *testing.T) {
 	m := sized(t, newModel(stubExec, nil), 120, 30)
 	r, _ := m.openMenuItem(indexOfAction(m, "up"))
 	m = asModel(r)
+	m.form.fields[0].paths = []string{"fixture.mp4"}
 	frame := m.frame()
 	plain := renderPlain(m)
 	lines := strings.Split(plain, "\n")
@@ -287,6 +288,7 @@ func TestEnterOnBoolFieldRuns(t *testing.T) {
 	m := sized(t, newModel(stubExec, nil), 90, 24)
 	m = key(t, m, tea.KeyMsg{Type: tea.KeyDown}) // Download
 	m = key(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m.form.fields[0].ti.SetValue("https://t.me/a/1")
 	// walk to "Rewrite ext" (field 5, bool)
 	for i := 0; i < 5; i++ {
 		m = key(t, m, tea.KeyMsg{Type: tea.KeyDown})

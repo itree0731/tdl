@@ -1,6 +1,9 @@
 package tui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestWarmCopperPaletteProfiles(t *testing.T) {
 	trueColour := paletteFor(ColorTrue)
@@ -14,6 +17,21 @@ func TestWarmCopperPaletteProfiles(t *testing.T) {
 	none := paletteFor(ColorNone)
 	if none.Text != "" || none.Copper != "" || none.Error != "" {
 		t.Fatalf("NO_COLOR palette contains colours: %+v", none)
+	}
+}
+
+func TestNoColorThemeEmitsNoANSISequences(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	if detectColorProfile() != ColorNone {
+		t.Fatal("NO_COLOR was not detected")
+	}
+	theme := buildTheme(ColorNone)
+	out := theme.brand.Render("TDL") + theme.failure.Render("failed") + theme.panel.Render("content")
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("NO_COLOR theme emitted ANSI styling: %q", out)
+	}
+	if !strings.Contains(out, "TDL") || !strings.Contains(out, "failed") {
+		t.Fatalf("NO_COLOR theme hid semantic text: %q", out)
 	}
 }
 

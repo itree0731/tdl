@@ -64,6 +64,7 @@ type model struct {
 	settingsPrompt    bool
 	settingsQuit      bool
 	settingsError     string
+	formError         string
 	settingsButton    int
 	running           bool
 	showOutput        bool
@@ -79,6 +80,10 @@ type model struct {
 	chatPicker        *chatPicker
 	chatField         int
 	retryPrompt       bool
+	errorListOpen     bool
+	errorCursor       int
+	clipboard         Clipboard
+	clipboardNotice   string
 	colorProfile      ColorProfile
 	mediaPreview      MediaPreview
 	previewPath       string
@@ -136,6 +141,7 @@ func newModel(exec Executor, namespaces []string, options ...tuiOption) model {
 		follow:        true,
 		colorProfile:  detectColorProfile(),
 		mediaPreview:  newLocalMediaPreview(32),
+		clipboard:     defaultClipboard(),
 		lastLoggedPct: -1,
 	}
 	for _, option := range options {
@@ -443,6 +449,10 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 						m.picker.lastClickAt = now
 					}
 				}
+			case UIActionError:
+				if action.Index >= 0 && action.Index < len(m.runResult.Items) {
+					m.errorCursor = action.Index
+				}
 			}
 		}
 	}
@@ -705,6 +715,21 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.retryFailed(true)
 		case "n", "esc":
 			m.retryPrompt = false
+		}
+
+	case screenErrorList:
+		switch msg.String() {
+		case "up", "k":
+			m.errorCursor = max(0, m.errorCursor-1)
+		case "down", "j":
+			m.errorCursor = min(max(0, len(m.runResult.Items)-1), m.errorCursor+1)
+		case "c":
+			m.copySelectedError()
+		case "r":
+			m.errorListOpen = false
+			return m.retryFailed(false)
+		case "enter", "esc", "q":
+			m.errorListOpen = false
 		}
 
 	case stateRun:
@@ -993,9 +1018,10 @@ func (m model) launchAction(a *action) (tea.Model, tea.Cmd) {
 	spec := a.formSpec()
 	run, err := spec.build(a.formValues(), m.set)
 	if err != nil {
-		m.settingsError = err.Error()
+		m.formError = err.Error()
 		return m, nil
 	}
+	m.formError = ""
 	run.Display = RunDisplay{Title: a.title(m.lang), Summary: a.desc(m.lang)}
 	return m.launchRunSpec(run)
 }
@@ -1087,6 +1113,32 @@ func (m model) retryFailed(forceUncertain bool) (tea.Model, tea.Cmd) {
 	return m.launchRunSpec(run)
 }
 
+func (m *model) openErrorList() {
+	if len(m.runResult.Items) == 0 {
+		return
+	}
+	m.errorCursor = min(m.errorCursor, len(m.runResult.Items)-1)
+	m.errorListOpen = true
+	m.clipboardNotice = ""
+}
+
+func (m *model) copySelectedError() {
+	if len(m.runResult.Items) == 0 || m.errorCursor < 0 || m.errorCursor >= len(m.runResult.Items) {
+		return
+	}
+	item := m.runResult.Items[m.errorCursor]
+	value := strings.TrimSpace(item.DisplayName + "\n" + item.SourcePath + "\n" + item.Phase + "\n" + item.Err)
+	if m.clipboard == nil {
+		m.clipboardNotice = m.lang.t("errors.copy.failed")
+		return
+	}
+	if err := m.clipboard.Copy(value); err != nil {
+		m.clipboardNotice = m.lang.t("errors.copy.failed") + ": " + err.Error()
+		return
+	}
+	m.clipboardNotice = m.lang.t("errors.copied")
+}
+
 func replaceRepeatedFlag(args []string, flag string, values []string) []string {
 	out := make([]string, 0, len(args)+len(values)*2)
 	for i := 0; i < len(args); i++ {
@@ -1157,6 +1209,7 @@ func (m *model) toMenu() {
 	m.settingsPrompt = false
 	m.settingsQuit = false
 	m.settingsError = ""
+	m.formError = ""
 	m.settingsButton = -1
 	m.runErr = nil
 	m.runLast = 0
@@ -1172,6 +1225,9 @@ func (m *model) toMenu() {
 	m.chatPicker = nil
 	m.chatField = 0
 	m.retryPrompt = false
+	m.errorListOpen = false
+	m.errorCursor = 0
+	m.clipboardNotice = ""
 	m.vp.SetContent("")
 }
 
@@ -1206,6 +1262,8 @@ func (m model) state() state {
 		return screenChatPicker
 	case m.retryPrompt:
 		return screenConfirm
+	case m.errorListOpen:
+		return screenErrorList
 	case m.running || m.showOutput:
 		return stateRun
 	case m.form != nil:
@@ -1343,6 +1401,8 @@ func (m model) frame() Frame {
 		content = m.viewChatPicker()
 	case screenConfirm:
 		content = m.viewRetryConfirm()
+	case screenErrorList:
+		content = m.viewErrorList()
 	default:
 		content = m.viewRun()
 	}
@@ -1353,7 +1413,7 @@ func (m model) frame() Frame {
 	}
 	b = append(b, content)
 
-	// status line (visible while running, grok-style)
+	// Context status and action line for standard and compact layouts.
 	b = append(b, m.viewStatus())
 
 	// prompt box
@@ -1548,6 +1608,7 @@ func (m model) hitRegions() []HitRegion {
 	}
 	regions = append(regions, m.pickerRegions()...)
 	regions = append(regions, m.chatRegions()...)
+	regions = append(regions, m.errorListRegions()...)
 	if chooseLayout(m.width, m.height) == layoutWide && m.state() == stateRun && m.running {
 		for _, button := range m.runButtons() {
 			regions = append(regions, HitRegion{ID: "button:" + button.id, Rect: Rect{X: button.x0, Y: button.y, W: button.x1 - button.x0, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: button.id}})
@@ -1645,6 +1706,9 @@ func (m model) viewForm() string {
 		}
 		rows = append(rows, ansi.Truncate(row, max(1, width-2), "…"))
 	}
+	if m.formError != "" {
+		rows = append(rows, stErr.Render(ansi.Truncate(m.formError, max(1, width-2), "…")))
+	}
 	body := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return lipgloss.NewStyle().Width(width).Height(m.mainHeight()).Padding(0, 1).Render(body)
 }
@@ -1664,7 +1728,11 @@ func (m model) viewPrompt() string {
 			}
 		} else {
 			_ = argv
-			text = stHint.Render(m.currentFieldHelp())
+			if m.formError != "" {
+				text = stErr.Render(m.formError)
+			} else {
+				text = stHint.Render(m.currentFieldHelp())
+			}
 		}
 	case screenFilePicker:
 		text = stHint.Render(m.lang.t("picker.help"))
@@ -1712,6 +1780,8 @@ func (m model) viewShortcuts() string {
 		return sc("↑↓", m.lang.t("sc.updown"), "space", m.lang.t("picker.select"), "c", m.lang.t("picker.confirm"), "esc", m.lang.t("picker.cancel"))
 	case screenChatPicker:
 		return sc("↑↓", m.lang.t("sc.updown"), "type", m.lang.t("chat.search"), "c", m.lang.t("chat.confirm"), "esc", m.lang.t("picker.cancel"))
+	case screenErrorList:
+		return sc("↑↓", m.lang.t("sc.updown"), "c", m.lang.t("errors.copy"), "r", m.lang.t("errors.retry.all"), "esc", m.lang.t("errors.back"))
 	default:
 		if !m.running {
 			if len(m.runResult.Items) > 0 {
