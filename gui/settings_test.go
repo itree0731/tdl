@@ -6,7 +6,7 @@ import (
 )
 
 func TestDesktopSettingsAtomicRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gui.json")
+	path := filepath.Join(t.TempDir(), "tmt.json")
 	settings := defaultDesktopSettings()
 	settings.Threads = 9
 	settings.Proxy = "socks5://127.0.0.1:1080"

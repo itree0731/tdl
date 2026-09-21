@@ -20,12 +20,12 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -X github.com/iyear/tdl/pkg/consts.Version=${VERSION}  \
     -X github.com/iyear/tdl/pkg/consts.Commit=${COMMIT}  \
     -X github.com/iyear/tdl/pkg/consts.CommitDate=${COMMIT_DATE}" \
-    -o tdl
+    -o tmt
 
 FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates
 
-COPY --from=builder /tdl /usr/bin/tdl
+COPY --from=builder /tmt /usr/bin/tmt
 
-ENTRYPOINT ["tdl"]
+ENTRYPOINT ["tmt"]

@@ -1,12 +1,12 @@
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$outputPath = Join-Path $repoRoot 'tdl-gui.exe'
+$outputPath = Join-Path $repoRoot 'tmt-gui.exe'
 $running = Get-CimInstance Win32_Process | Where-Object {
-    $_.Name -eq 'tdl-gui.exe' -and $_.ExecutablePath -eq $outputPath
+    $_.Name -eq 'tmt-gui.exe' -and $_.ExecutablePath -eq $outputPath
 }
 if ($running) {
-    throw "tdl-gui.exe 正在运行，请先关闭窗口再构建。"
+    throw "tmt-gui.exe 正在运行，请先关闭窗口再构建。"
 }
 
 Push-Location (Join-Path $repoRoot 'gui\frontend')

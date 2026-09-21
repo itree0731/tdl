@@ -1,8 +1,8 @@
-# tdl
+# TMT
 
 <img align="right" src="docs/assets/img/logo.png" height="280" alt="">
 
-> 📥 Telegram Downloader, but more than a downloader
+> Telegram Media Transfer
 
 English | <a href="README_zh.md">简体中文</a>
 

@@ -1,4 +1,4 @@
-project_name: tdl
+project_name: tmt
 dist: .tdl/dist
 env:
   - GO111MODULE=on

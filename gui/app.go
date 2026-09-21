@@ -29,6 +29,8 @@ type App struct {
 	chatCursors  map[string]map[int]*chat.DialogCursor
 	settings     DesktopSettings
 	settingsErr  error
+	tasks        []TaskRecord
+	nextTaskID   int64
 }
 type Capabilities struct {
 	Product       string `json:"product"`
@@ -95,7 +97,7 @@ func NewApp() *App {
 	return &App{chatCursors: make(map[string]map[int]*chat.DialogCursor), settings: settings, settingsErr: err}
 }
 func (a *App) startup(ctx context.Context) { a.ctx = ctx }
-func (a *App) Capabilities() Capabilities  { return Capabilities{"TDL Desktop", true, true, true, true} }
+func (a *App) Capabilities() Capabilities  { return Capabilities{"TMT Desktop", true, true, true, true} }
 func (a *App) Namespaces() ([]string, error) {
 	store, err := kv.NewWithMap(tdlcmd.DefaultBoltStorage)
 	if err != nil {
@@ -150,7 +152,7 @@ func (a *App) SelectDownloadDirectory() (string, error) {
 
 func (a *App) SelectDownloadExportFiles() ([]string, error) {
 	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:   "选择 tdl 会话导出 JSON",
+		Title:   "选择 TMT 会话导出 JSON",
 		Filters: []runtime.FileFilter{{DisplayName: "JSON 文件 (*.json)", Pattern: "*.json"}},
 	})
 }
@@ -233,7 +235,7 @@ func (a *App) StartUpload(req UploadRequest) (StartResult, error) {
 	if len(req.Paths) == 0 {
 		return StartResult{}, fmt.Errorf("请选择至少一个文件或目录")
 	}
-	return a.startTransfer("upload", buildUploadArgs(req))
+	return a.startTransfer("upload", buildUploadArgs(req), fmt.Sprintf("%d 个输入", len(req.Paths)))
 }
 
 func (a *App) StartDownload(req DownloadRequest) (StartResult, error) {
@@ -243,10 +245,10 @@ func (a *App) StartDownload(req DownloadRequest) (StartResult, error) {
 	if req.Directory == "" {
 		return StartResult{}, fmt.Errorf("请选择下载目录")
 	}
-	return a.startTransfer("download", buildDownloadArgs(req))
+	return a.startTransfer("download", buildDownloadArgs(req), fmt.Sprintf("%d 个链接，%d 个导出文件", len(req.URLs), len(req.Files)))
 }
 
-func (a *App) startTransfer(direction string, args []string) (StartResult, error) {
+func (a *App) startTransfer(direction string, args []string, detail string) (StartResult, error) {
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
@@ -262,12 +264,16 @@ func (a *App) startTransfer(direction string, args []string) (StartResult, error
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.cancel, a.running = cancel, true
-	a.mu.Unlock()
-	go a.runTransfer(ctx, direction, args)
-	message := "上传任务已启动"
-	if direction == "download" {
-		message = "下载任务已启动"
+	a.nextTaskID++
+	taskID := a.nextTaskID
+	a.tasks = append(a.tasks, TaskRecord{ID: taskID, Type: direction, Detail: detail, Status: "running", StartedAt: time.Now()})
+	if len(a.tasks) > 100 {
+		a.tasks = append([]TaskRecord(nil), a.tasks[len(a.tasks)-100:]...)
 	}
+	a.mu.Unlock()
+	runtime.EventsEmit(a.ctx, "tasks:changed", a.TaskHistory())
+	go a.runTransfer(ctx, direction, args, taskID)
+	message := operationLabel(direction) + "任务已启动"
 	return StartResult{true, message}, nil
 }
 func (a *App) StopTransfer() bool {
@@ -280,7 +286,7 @@ func (a *App) StopTransfer() bool {
 	return true
 }
 
-func (a *App) runTransfer(ctx context.Context, direction string, args []string) {
+func (a *App) runTransfer(ctx context.Context, direction string, args []string, taskID int64) {
 	collector := xprogress.NewCollector()
 	ctx = xprogress.WithSink(ctx, collector)
 	stopUpdates := make(chan struct{})
@@ -309,9 +315,10 @@ func (a *App) runTransfer(ctx context.Context, direction string, args []string) 
 	close(stopUpdates)
 	<-done
 	final := collector.FinishContext(ctx, err)
+	a.finishTask(taskID, string(final.Status), errorString(err), final.Summary(true))
 	runtime.EventsEmit(a.ctx, "transfer:snapshot", final)
 	runtime.EventsEmit(a.ctx, "transfer:items", collector.Items())
-	runtime.EventsEmit(a.ctx, "transfer:done", map[string]any{"direction": direction, "error": errorString(err), "canceled": errors.Is(ctx.Err(), context.Canceled)})
+	runtime.EventsEmit(a.ctx, "transfer:done", map[string]any{"taskID": taskID, "direction": direction, "error": errorString(err), "canceled": errors.Is(ctx.Err(), context.Canceled)})
 	a.mu.Lock()
 	a.running = false
 	a.cancel = nil

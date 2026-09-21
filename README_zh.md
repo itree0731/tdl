@@ -2,11 +2,11 @@
 > 中文文档可能落后于英文文档，如果有问题请先查看英文文档。
 > 请使用英文发起新的 Issue, 以便于追踪和搜索
 
-# tdl
+# TMT
 
 <img align="right" src="docs/assets/img/logo.png" height="280" alt="">
 
-> 📥 Telegram Downloader, but more than a downloader
+> Telegram 媒体传输工具
 
 <a href="README.md">English</a> | 简体中文
 

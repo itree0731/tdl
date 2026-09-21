@@ -6,7 +6,8 @@ param(
 
 $Owner = "iyear"
 $Repo = "tdl"
-$Location = "$Env:SystemDrive\tdl"
+$Project = "tmt"
+$Location = "$Env:SystemDrive\tmt"
 
 $ErrorActionPreference = "Stop"
 
@@ -52,30 +53,30 @@ if (!$Version)
 Write-Host "Target version: $Version" -ForegroundColor Blue
 
 # build download URL
-$URL = "${PROXY_PREFIX}https://github.com/$Owner/$Repo/releases/download/$Version/${Repo}_Windows_$Arch.zip"
-$ChecksumURL = "${PROXY_PREFIX}https://github.com/$Owner/$Repo/releases/download/$Version/${Repo}_checksums.txt"
-Write-Host "Downloading $Repo from $URL" -ForegroundColor Blue
+$URL = "${PROXY_PREFIX}https://github.com/$Owner/$Repo/releases/download/$Version/${Project}_Windows_$Arch.zip"
+$ChecksumURL = "${PROXY_PREFIX}https://github.com/$Owner/$Repo/releases/download/$Version/${Project}_checksums.txt"
+Write-Host "Downloading $Project from $URL" -ForegroundColor Blue
 
 # download archive and checksums
-Invoke-WebRequest -Uri $URL -OutFile "$Repo.zip"
+Invoke-WebRequest -Uri $URL -OutFile "$Project.zip"
 # test zip path
-if (-not(Test-Path "$Repo.zip"))
+if (-not(Test-Path "$Project.zip"))
 {
     Write-Host "Download $URL failed" -ForegroundColor Red
     exit 1
 }
-Invoke-WebRequest -Uri $ChecksumURL -OutFile "$Repo-checksums.txt"
+Invoke-WebRequest -Uri $ChecksumURL -OutFile "$Project-checksums.txt"
 
 # verify sha256 checksum before extracting
-$ArchiveName = "${Repo}_Windows_$Arch.zip"
-$Expected = (Select-String -Path "$Repo-checksums.txt" -Pattern ("(^|\s)" + [regex]::Escape($ArchiveName) + "\s*$") |
+$ArchiveName = "${Project}_Windows_$Arch.zip"
+$Expected = (Select-String -Path "$Project-checksums.txt" -Pattern ("(^|\s)" + [regex]::Escape($ArchiveName) + "\s*$") |
     Select-Object -First 1).Line -split '\s+' | Select-Object -First 1
 if (-not $Expected)
 {
     Write-Host "Checksum for $ArchiveName not found in checksums file" -ForegroundColor Red
     exit 1
 }
-$Actual = (Get-FileHash -Path "$Repo.zip" -Algorithm SHA256).Hash.ToLower()
+$Actual = (Get-FileHash -Path "$Project.zip" -Algorithm SHA256).Hash.ToLower()
 if ($Actual -ne $Expected.ToLower())
 {
     Write-Host "Checksum mismatch: expected $Expected, got $Actual" -ForegroundColor Red
@@ -83,8 +84,8 @@ if ($Actual -ne $Expected.ToLower())
 }
 Write-Host "Checksum verified" -ForegroundColor Green
 
-# only extract tdl.exe to $LOCATION , add to PATH and remove zip file
-Expand-Archive -Path "$Repo.zip" -DestinationPath "$Location" -Force
+# extract tmt.exe to $LOCATION, add to PATH and remove temporary files
+Expand-Archive -Path "$Project.zip" -DestinationPath "$Location" -Force
 
 # if $LOCATION has not been added to PATH yet, add it
 $PathEnv = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine)
@@ -100,16 +101,16 @@ if (-not($PathEnv -like "*$Location*"))
     Write-Host "Note: Updates to PATH might not be visible until you restart your terminal application or reboot machine" -ForegroundColor Yellow
 }
 # remove zip and checksums file
-Remove-Item "$Repo.zip"
-Remove-Item "$Repo-checksums.txt" -ErrorAction SilentlyContinue
+Remove-Item "$Project.zip"
+Remove-Item "$Project-checksums.txt" -ErrorAction SilentlyContinue
 
 # test if installation is successful, and print instructions
-if (-not(Get-Command $Repo -ErrorAction SilentlyContinue))
+if (-not(Get-Command $Project -ErrorAction SilentlyContinue))
 {
     Write-Host "Installation failed" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "$Repo installed successfully! Location: $Location" -ForegroundColor Green
-Write-Host "Run '$Repo' to get started" -ForegroundColor Green
-Write-Host "To get started with tdl, please visit https://docs.iyear.me/tdl" -ForegroundColor Green
+Write-Host "$Project installed successfully! Location: $Location" -ForegroundColor Green
+Write-Host "Run '$Project' to get started" -ForegroundColor Green
+Write-Host "TMT documentation: https://docs.iyear.me/tdl" -ForegroundColor Green

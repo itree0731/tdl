@@ -1,7 +1,7 @@
-# TDL Desktop GUI
+# TMT Desktop GUI
 
-Wails v2 desktop application. The existing root `tdl.exe` remains the CLI;
-the GUI builds as a separate `tdl-gui.exe` and reuses the same Go transfer
+Wails v2 desktop application. The root `tmt.exe` is the CLI;
+the GUI builds as a separate `tmt-gui.exe` and reuses the same Go transfer
 packages.
 
 ```powershell
@@ -18,7 +18,8 @@ The current desktop build provides:
 - real upload and download commands with structured progress and cancellation;
 - paged Telegram chat/topic selection;
 - `video_cover` upload options with playback starting at zero;
-- validated, atomically saved GUI settings in `~/.tdl/gui.json`.
+- validated, atomically saved GUI settings in `~/.tdl/tmt.json`.
 
 The frontend calls typed Wails bindings and never assembles shell command
-strings. `tdl.exe` remains the standalone CLI; `tdl-gui.exe` is the desktop app.
+strings. `tmt.exe` is the standalone CLI; `tmt-gui.exe` is the desktop app.
+Existing accounts remain in the legacy-compatible `~/.tdl` data directory.

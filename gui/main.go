@@ -15,7 +15,7 @@ var assets embed.FS
 func main() {
 	app := NewApp()
 	err := wails.Run(&options.App{
-		Title:            "TDL · Telegram Media Transfer",
+		Title:            "TMT · Telegram Media Transfer",
 		Width:            1440,
 		Height:           900,
 		MinWidth:         980,

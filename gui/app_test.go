@@ -31,3 +31,21 @@ func TestBuildDownloadArgsUsesNonInteractiveResumeAndPreservesURLs(t *testing.T)
 		t.Fatalf("args=%v\nwant=%v", got, want)
 	}
 }
+
+func TestBuildForwardArgsPreservesSourcesAndMode(t *testing.T) {
+	req := ForwardRequest{Namespace: "work", Proxy: "socks5://127.0.0.1:1080", Threads: 6, From: []string{"https://t.me/c/1/2", `C:\exports\one, two.json`}, To: "12345", Mode: "clone", Silent: true}
+	got := buildForwardArgs(req)
+	want := []string{"--ns", "work", "--proxy", "socks5://127.0.0.1:1080", "--threads", "6", "forward", "--from", "https://t.me/c/1/2", "--from", `C:\exports\one, two.json`, "--to", "12345", "--mode", "clone", "--silent"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args=%v\nwant=%v", got, want)
+	}
+}
+
+func TestBuildChatExportArgsUsesLastRange(t *testing.T) {
+	req := ChatExportRequest{Namespace: "default", Chat: "777", Topic: 9, Last: 50, Output: `D:\exports\chat.json`, WithContent: true}
+	got := buildChatExportArgs(req)
+	want := []string{"--ns", "default", "chat", "export", "--type", "last", "--input", "50", "--output", `D:\exports\chat.json`, "--chat", "777", "--topic", "9", "--with-content"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args=%v\nwant=%v", got, want)
+	}
+}

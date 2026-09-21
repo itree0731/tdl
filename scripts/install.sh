@@ -2,6 +2,7 @@
 
 OWNER="iyear"
 REPO="tdl"
+PROJECT="tmt"
 LOCATION="/usr/local/bin"
 
 echo_green() {
@@ -120,13 +121,13 @@ fi
 echo_blue "Target version: $VERSION"
 
 # build download URL
-URL=${PROXY}https://github.com/$OWNER/$REPO/releases/download/$VERSION/${REPO}_${OS}_$ARCH.tar.gz
-CHECKSUM_URL=${PROXY}https://github.com/$OWNER/$REPO/releases/download/$VERSION/${REPO}_checksums.txt
-echo_blue "Downloading $REPO from $URL"
+URL=${PROXY}https://github.com/$OWNER/$REPO/releases/download/$VERSION/${PROJECT}_${OS}_$ARCH.tar.gz
+CHECKSUM_URL=${PROXY}https://github.com/$OWNER/$REPO/releases/download/$VERSION/${PROJECT}_checksums.txt
+echo_blue "Downloading $PROJECT from $URL"
 
 TMP_DIR=$(mktemp -d) || exit 1
 trap 'rm -rf "$TMP_DIR"' EXIT
-ARCHIVE="$TMP_DIR/${REPO}_${OS}_$ARCH.tar.gz"
+ARCHIVE="$TMP_DIR/${PROJECT}_${OS}_$ARCH.tar.gz"
 
 # download archive and checksums
 download "$URL" > "$ARCHIVE"
@@ -136,7 +137,7 @@ download "$CHECKSUM_URL" > "$TMP_DIR/checksums.txt"
 ARCHIVE_NAME=$(basename "$ARCHIVE")
 EXPECTED=$(grep "  $ARCHIVE_NAME\$" "$TMP_DIR/checksums.txt" | awk '{print $1}')
 if [ -z "$EXPECTED" ]; then
-    echo_red "Checksum for $ARCHIVE_NAME not found in tdl_checksums.txt"
+    echo_red "Checksum for $ARCHIVE_NAME not found in ${PROJECT}_checksums.txt"
     exit 1
 fi
 if command -v sha256sum >/dev/null 2>&1; then
@@ -155,8 +156,8 @@ echo_green "Checksum verified"
 
 # extract and install
 tar -xzf "$ARCHIVE" -C "$TMP_DIR" && \
-  mv "$TMP_DIR/$REPO" $LOCATION/$REPO && \
-  chmod +x $LOCATION/$REPO && \
-  echo_green "$REPO installed successfully! Location: $LOCATION/$REPO" && \
-  echo_green "Run '$REPO' to get started" && \
-  echo_green "To get started with tdl, please visit https://docs.iyear.me/tdl"
+  mv "$TMP_DIR/$PROJECT" $LOCATION/$PROJECT && \
+  chmod +x $LOCATION/$PROJECT && \
+  echo_green "$PROJECT installed successfully! Location: $LOCATION/$PROJECT" && \
+  echo_green "Run '$PROJECT' to get started" && \
+  echo_green "TMT documentation: https://docs.iyear.me/tdl"

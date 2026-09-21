@@ -66,8 +66,8 @@ func New() *cobra.Command {
 	em := extensions.NewManager(consts.ExtensionsPath)
 
 	cmd := &cobra.Command{
-		Use:           "tdl",
-		Short:         "Telegram Downloader, but more than a downloader",
+		Use:           "tmt",
+		Short:         "Telegram Media Transfer",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {

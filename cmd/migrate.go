@@ -20,14 +20,14 @@ func NewBackup() *cobra.Command {
 		GroupID: groupAccount.ID,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dst == "" {
-				dst = fmt.Sprintf("%s.backup.tdl", time.Now().Format("2006-01-02-15_04_05"))
+				dst = fmt.Sprintf("%s.backup.tmt", time.Now().Format("2006-01-02-15_04_05"))
 			}
 
 			return migrate.Backup(cmd.Context(), dst)
 		},
 	}
 
-	cmd.Flags().StringVarP(&dst, "dst", "d", "", "destination file path. Default: <date>.backup.tdl")
+	cmd.Flags().StringVarP(&dst, "dst", "d", "", "destination file path. Default: <date>.backup.tmt")
 
 	return cmd
 }
@@ -49,7 +49,7 @@ func NewRecover() *cobra.Command {
 	cmd.Flags().StringVarP(&file, fileFlag, "f", "", "backup file path")
 
 	// completion and validation
-	_ = cmd.RegisterFlagCompletionFunc(fileFlag, completeExtFiles("tdl"))
+	_ = cmd.RegisterFlagCompletionFunc(fileFlag, completeExtFiles("tmt", "tdl"))
 	_ = cmd.MarkFlagRequired(fileFlag)
 
 	return cmd

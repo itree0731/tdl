@@ -41,7 +41,7 @@ func defaultDesktopSettings() DesktopSettings {
 	}
 }
 
-func desktopSettingsPath() string { return filepath.Join(consts.DataDir, "gui.json") }
+func desktopSettingsPath() string { return filepath.Join(consts.DataDir, "tmt.json") }
 
 func loadDesktopSettings(path string) (DesktopSettings, error) {
 	settings := defaultDesktopSettings()
@@ -75,7 +75,7 @@ func validateDesktopSettings(settings DesktopSettings) error {
 	if settings.DownloadDirectory == "" {
 		return fmt.Errorf("默认下载目录不能为空")
 	}
-	if settings.CoverMode != "video-cover" && settings.CoverMode != "video-thumb" && settings.CoverMode != "none" {
+	if settings.CoverMode != "video-cover" && settings.CoverMode != "thumbnail" && settings.CoverMode != "off" {
 		return fmt.Errorf("视频封面模式无效")
 	}
 	if settings.CoverAt == "" {
