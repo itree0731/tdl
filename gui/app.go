@@ -9,17 +9,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iyear/tdl/app/chat"
 	tdlcmd "github.com/iyear/tdl/cmd"
 	"github.com/iyear/tdl/pkg/kv"
 	xprogress "github.com/iyear/tdl/pkg/progress"
+	"github.com/iyear/tdl/pkg/tclient"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type App struct {
-	ctx     context.Context
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	running bool
+	ctx          context.Context
+	mu           sync.Mutex
+	cancel       context.CancelFunc
+	running      bool
+	chatLoading  bool
+	dialogMu     sync.Mutex
+	chatCursorID int
+	chatCursors  map[string]map[int]*chat.DialogCursor
 }
 type Capabilities struct {
 	Product       string `json:"product"`
@@ -45,7 +51,29 @@ type StartResult struct {
 	Message  string `json:"message"`
 }
 
-func NewApp() *App                         { return &App{} }
+type TopicRef struct {
+	ID    int    `json:"id"`
+	Title string `json:"title"`
+}
+
+type ChatRef struct {
+	ID       int64      `json:"id"`
+	Username string     `json:"username"`
+	Title    string     `json:"title"`
+	Type     string     `json:"type"`
+	Topics   []TopicRef `json:"topics"`
+	Self     bool       `json:"self"`
+}
+
+type ChatPage struct {
+	Items   []ChatRef `json:"items"`
+	Next    int       `json:"next"`
+	Skipped int       `json:"skipped"`
+}
+
+func NewApp() *App {
+	return &App{chatCursors: make(map[string]map[int]*chat.DialogCursor)}
+}
 func (a *App) startup(ctx context.Context) { a.ctx = ctx }
 func (a *App) Capabilities() Capabilities  { return Capabilities{"TDL Desktop", true, true, true, true} }
 func (a *App) Namespaces() ([]string, error) {
@@ -63,6 +91,80 @@ func (a *App) SelectUploadDirectory() (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择上传目录"})
 }
 
+func (a *App) ChatPage(namespace string, cursor, limit int) (ChatPage, error) {
+	a.dialogMu.Lock()
+	defer a.dialogMu.Unlock()
+
+	a.mu.Lock()
+	if a.running {
+		a.mu.Unlock()
+		return ChatPage{}, fmt.Errorf("传输运行时不能加载会话")
+	}
+	a.chatLoading = true
+	defer func() {
+		a.mu.Lock()
+		a.chatLoading = false
+		a.mu.Unlock()
+	}()
+	var native *chat.DialogCursor
+	if cursor > 0 {
+		native = a.chatCursors[namespace][cursor]
+		if native == nil {
+			a.mu.Unlock()
+			return ChatPage{}, fmt.Errorf("无效会话游标")
+		}
+	}
+	a.mu.Unlock()
+	store, err := kv.NewWithMap(tdlcmd.DefaultBoltStorage)
+	if err != nil {
+		return ChatPage{}, err
+	}
+	defer store.Close()
+	db, err := store.Open(namespace)
+	if err != nil {
+		return ChatPage{}, err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 45*time.Second)
+	defer cancel()
+	client, err := tclient.New(ctx, tclient.Options{KV: db, ReconnectTimeout: 30 * time.Second}, false)
+	if err != nil {
+		return ChatPage{}, err
+	}
+	var dialogs []*chat.Dialog
+	var next *chat.DialogCursor
+	var skipped int
+	err = client.Run(ctx, func(runCtx context.Context) error {
+		var pageErr error
+		dialogs, next, skipped, pageErr = chat.ListDialogsPage(runCtx, client, db, native, limit)
+		return pageErr
+	})
+	if err != nil {
+		return ChatPage{}, err
+	}
+	page := ChatPage{Items: make([]ChatRef, 0, len(dialogs)+1), Skipped: skipped}
+	if cursor == 0 {
+		page.Items = append(page.Items, ChatRef{Title: "Saved Messages", Type: "self", Self: true})
+	}
+	for _, d := range dialogs {
+		topics := make([]TopicRef, 0, len(d.Topics))
+		for _, topic := range d.Topics {
+			topics = append(topics, TopicRef{ID: topic.ID, Title: topic.Title})
+		}
+		page.Items = append(page.Items, ChatRef{ID: d.ID, Username: d.Username, Title: d.VisibleName, Type: d.Type, Topics: topics})
+	}
+	if next != nil {
+		a.mu.Lock()
+		a.chatCursorID++
+		page.Next = a.chatCursorID
+		if a.chatCursors[namespace] == nil {
+			a.chatCursors[namespace] = make(map[int]*chat.DialogCursor)
+		}
+		a.chatCursors[namespace][page.Next] = next
+		a.mu.Unlock()
+	}
+	return page, nil
+}
+
 func (a *App) StartUpload(req UploadRequest) (StartResult, error) {
 	if len(req.Paths) == 0 {
 		return StartResult{}, fmt.Errorf("请选择至少一个文件或目录")
@@ -71,6 +173,10 @@ func (a *App) StartUpload(req UploadRequest) (StartResult, error) {
 	if a.running {
 		a.mu.Unlock()
 		return StartResult{}, fmt.Errorf("已有传输任务正在运行")
+	}
+	if a.chatLoading {
+		a.mu.Unlock()
+		return StartResult{}, fmt.Errorf("正在加载会话，请稍后开始上传")
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.cancel, a.running = cancel, true
@@ -105,6 +211,7 @@ func (a *App) runUpload(ctx context.Context, req UploadRequest) {
 				return
 			case <-t.C:
 				runtime.EventsEmit(a.ctx, "transfer:snapshot", collector.Snapshot())
+				runtime.EventsEmit(a.ctx, "transfer:items", collector.Items())
 			}
 		}
 	}()
@@ -118,6 +225,7 @@ func (a *App) runUpload(ctx context.Context, req UploadRequest) {
 	<-done
 	final := collector.FinishContext(ctx, err)
 	runtime.EventsEmit(a.ctx, "transfer:snapshot", final)
+	runtime.EventsEmit(a.ctx, "transfer:items", collector.Items())
 	runtime.EventsEmit(a.ctx, "transfer:done", map[string]any{"error": errorString(err), "canceled": errors.Is(ctx.Err(), context.Canceled)})
 	a.mu.Lock()
 	a.running = false
