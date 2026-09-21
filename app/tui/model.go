@@ -108,8 +108,9 @@ type model struct {
 	lastLoggedFile string
 	lastLoggedPct  int
 
-	width, height int
-	screenID      uint64
+	width, height        int
+	screenID             uint64
+	contentWidthOverride int
 }
 
 func newModel(exec Executor, namespaces []string, options ...tuiOption) model {
@@ -268,6 +269,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.normalizeWideMenu()
 		w := m.width - 4 // prompt box padding+border
 		m.vp.Width = m.width
 		m.vp.Height = m.mainHeight()
@@ -421,6 +423,9 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				if action.Index >= 0 && action.Index < len(m.actions) {
 					m.menuIx = action.Index
 					if m.state() == stateMenu {
+						if chooseLayout(m.width, m.height) == layoutWide && m.actions[action.Index].id == "chatls" {
+							return m, nil
+						}
 						return m.openMenuItem(action.Index)
 					}
 				}
@@ -459,6 +464,10 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			case UIActionError:
 				if action.Index >= 0 && action.Index < len(m.runResult.Items) {
 					m.errorCursor = action.Index
+				}
+			case UIActionHub:
+				if action.Index >= 0 && action.Index < len(m.actions) {
+					return m.openMenuItem(action.Index)
 				}
 			}
 		}
@@ -516,20 +525,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case stateMenu:
 		switch msg.String() {
 		case "up", "k":
-			if m.menuIx > 0 {
-				m.menuIx--
-			}
+			m.moveMenu(-1)
 		case "down", "j":
-			if m.menuIx < len(m.actions)-1 {
-				m.menuIx++
-			}
+			m.moveMenu(1)
 		case "left":
-			if m.menuIx > 0 {
-				m.menuIx--
-			}
+			m.moveMenu(-1)
 		case "right":
-			if m.menuIx < len(m.actions)-1 {
-				m.menuIx++
+			m.moveMenu(1)
+		case "1", "2", "3":
+			if chooseLayout(m.width, m.height) == layoutWide && m.actions[m.menuIx].id == "chatls" {
+				ids := []string{"chatls", "chatexport", "chatusers"}
+				choice := int(msg.String()[0] - '1')
+				return m.openMenuItem(m.actionIndex(ids[choice]))
 			}
 		case "enter", " ":
 			return m.openMenuItem(m.menuIx)
@@ -1343,6 +1350,9 @@ func (m model) mainHeight() int {
 }
 
 func (m model) contentWidth() int {
+	if m.contentWidthOverride > 0 {
+		return m.contentWidthOverride
+	}
 	return max(1, m.width-m.sidebarWidth())
 }
 
@@ -1478,6 +1488,56 @@ type nsChip struct {
 	x0, x1 int // half-open [x0, x1) in terminal columns
 }
 
+func (m model) actionIndex(id string) int {
+	for i := range m.actions {
+		if m.actions[i].id == id {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m model) menuSequence() []int {
+	if chooseLayout(m.width, m.height) != layoutWide {
+		sequence := make([]int, len(m.actions))
+		for i := range sequence {
+			sequence[i] = i
+		}
+		return sequence
+	}
+	ids := []string{"up", "dl", "chatls", "forward", "backup", "recover", "settings", "login", "update", "version", "quit"}
+	sequence := make([]int, 0, len(ids))
+	for _, id := range ids {
+		sequence = append(sequence, m.actionIndex(id))
+	}
+	return sequence
+}
+
+func (m *model) normalizeWideMenu() {
+	if chooseLayout(m.width, m.height) != layoutWide {
+		return
+	}
+	for _, index := range m.menuSequence()[:7] {
+		if m.menuIx == index {
+			return
+		}
+	}
+	m.menuIx = m.actionIndex("up")
+}
+
+func (m *model) moveMenu(delta int) {
+	sequence := m.menuSequence()
+	position := 0
+	for i, index := range sequence {
+		if index == m.menuIx {
+			position = i
+			break
+		}
+	}
+	position = (position + delta + len(sequence)) % len(sequence)
+	m.menuIx = sequence[position]
+}
+
 // currentNS is the namespace every executed command runs under.
 func (m model) currentNS() string {
 	if m.set.NS == "" {
@@ -1519,6 +1579,9 @@ func (m model) nsChipLayout(width int) []nsChip {
 func (m model) viewMenu() string {
 	if chooseLayout(m.width, m.height) == layoutCompact {
 		return m.viewMenuCompact()
+	}
+	if chooseLayout(m.width, m.height) == layoutWide && m.actions[m.menuIx].id == "chatls" {
+		return m.viewChatHub()
 	}
 	a := m.actions[m.menuIx]
 	width := m.contentWidth()
@@ -1610,36 +1673,54 @@ func (m model) hitRegions() []HitRegion {
 		regions = append(regions, HitRegion{ID: "account:" + c.ns, Rect: Rect{X: c.x0, Y: accountY, W: c.x1 - c.x0, H: 1}, Enabled: m.state() == stateMenu && !m.settingsPrompt, Action: UIAction{Kind: UIActionAccount, ID: c.ns}})
 	}
 	if sw := m.sidebarWidth(); sw > 0 {
-		menuTop := 4
 		if chooseLayout(m.width, m.height) == layoutWide {
-			menuTop = 5
-		}
-		for i := range m.actions {
-			regions = append(regions, HitRegion{ID: "menu:" + m.actions[i].id, Rect: Rect{X: 0, Y: menuTop + i, W: sw, H: 1}, Enabled: m.state() == stateMenu, Action: UIAction{Kind: UIActionMenu, Index: i, ID: m.actions[i].id}})
+			for i, entry := range m.widePrimaryNav() {
+				regions = append(regions, HitRegion{ID: "menu:" + m.actions[entry.actionIndex].id, Rect: Rect{X: 0, Y: 5 + i, W: sw, H: 1}, Enabled: m.state() == stateMenu, Action: UIAction{Kind: UIActionMenu, Index: entry.actionIndex, ID: m.actions[entry.actionIndex].id}})
+			}
+			systemX, systemY := 2, max(0, m.height-wideFooterHeight-6)
+			for _, entry := range m.wideSystemNav() {
+				w := lipgloss.Width(entry.label)
+				regions = append(regions, HitRegion{ID: "menu:" + m.actions[entry.actionIndex].id, Rect: Rect{X: systemX, Y: systemY, W: w, H: 1}, Enabled: m.state() == stateMenu, Action: UIAction{Kind: UIActionMenu, Index: entry.actionIndex, ID: m.actions[entry.actionIndex].id}})
+				systemX += w + 3
+			}
+		} else {
+			for i := range m.actions {
+				regions = append(regions, HitRegion{ID: "menu:" + m.actions[i].id, Rect: Rect{X: 0, Y: 4 + i, W: sw, H: 1}, Enabled: m.state() == stateMenu, Action: UIAction{Kind: UIActionMenu, Index: i, ID: m.actions[i].id}})
+			}
 		}
 	} else if chooseLayout(m.width, m.height) == layoutCompact && m.state() == stateMenu {
 		regions = append(regions, HitRegion{ID: "menu:" + m.actions[m.menuIx].id, Rect: Rect{X: 0, Y: m.contentTop(), W: m.width, H: m.mainHeight()}, Enabled: true, Action: UIAction{Kind: UIActionMenu, Index: m.menuIx, ID: m.actions[m.menuIx].id}})
 	}
 	if m.state() == stateForm && m.form != nil {
 		x := m.sidebarWidth()
+		fieldWidth := m.contentWidth()
+		fieldYBase := m.contentTop() + 2
+		selectorRight := m.width - 1
+		if chooseLayout(m.width, m.height) == layoutWide {
+			x += 2
+			fieldWidth = max(1, m.formPrimaryWidth()-6)
+			fieldYBase = m.contentTop() + 3
+			selectorRight = m.sidebarWidth() + m.formPrimaryWidth() - 3
+		}
 		first := max(0, m.formIx-max(1, m.mainHeight()-3)+1)
 		last := min(len(m.form.fields), first+max(1, m.mainHeight()-2))
 		for i := first; i < last; i++ {
-			y := m.contentTop() + 2 + i - first
-			regions = append(regions, HitRegion{ID: fmt.Sprintf("field:%d", i), Rect: Rect{X: x, Y: y, W: m.contentWidth(), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionField, Index: i}})
+			y := fieldYBase + i - first
+			regions = append(regions, HitRegion{ID: fmt.Sprintf("field:%d", i), Rect: Rect{X: x, Y: y, W: fieldWidth, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionField, Index: i}})
 			if m.form.fields[i].picker != nil {
 				buttonW := lipgloss.Width(m.selectorButtonText(&m.form.fields[i]))
-				regions = append(regions, HitRegion{ID: fmt.Sprintf("picker.open:%d", i), Rect: Rect{X: max(x, m.width-buttonW-1), Y: y, W: min(buttonW, m.contentWidth()), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("picker.open:%d", i)}})
+				regions = append(regions, HitRegion{ID: fmt.Sprintf("picker.open:%d", i), Rect: Rect{X: max(x, selectorRight-buttonW), Y: y, W: min(buttonW, fieldWidth), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("picker.open:%d", i)}})
 			}
 			if m.form.fields[i].kind == kChat {
 				buttonW := lipgloss.Width(m.selectorButtonText(&m.form.fields[i]))
-				regions = append(regions, HitRegion{ID: fmt.Sprintf("chat.open:%d", i), Rect: Rect{X: max(x, m.width-buttonW-1), Y: y, W: min(buttonW, m.contentWidth()), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("chat.open:%d", i)}})
+				regions = append(regions, HitRegion{ID: fmt.Sprintf("chat.open:%d", i), Rect: Rect{X: max(x, selectorRight-buttonW), Y: y, W: min(buttonW, fieldWidth), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("chat.open:%d", i)}})
 			}
 		}
 	}
 	regions = append(regions, m.pickerRegions()...)
 	regions = append(regions, m.chatRegions()...)
 	regions = append(regions, m.errorListRegions()...)
+	regions = append(regions, m.chatHubRegions()...)
 	if chooseLayout(m.width, m.height) == layoutWide && m.state() == stateRun && m.running {
 		for _, button := range m.runButtons() {
 			regions = append(regions, HitRegion{ID: "button:" + button.id, Rect: Rect{X: button.x0, Y: button.y, W: button.x1 - button.x0, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: button.id}})
@@ -1676,6 +1757,13 @@ func (m model) formFields() []field {
 }
 
 func (m model) viewForm() string {
+	if chooseLayout(m.width, m.height) == layoutWide {
+		return m.viewFormWide()
+	}
+	return m.viewFormClassic()
+}
+
+func (m model) viewFormClassic() string {
 	width := m.contentWidth()
 	subtitle := "$ tdl " + quoteJoin(m.form.argv(m.set.globalArgs()))
 	if m.isSetting {

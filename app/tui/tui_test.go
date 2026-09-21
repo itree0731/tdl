@@ -185,11 +185,7 @@ func TestModelFlow(t *testing.T) {
 			ix = i
 		}
 	}
-	steps := (ix - m.menuIx + len(m.actions)) % len(m.actions)
-	for i := 0; i < steps; i++ {
-		mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-		m = mm.(model)
-	}
+	m.menuIx = ix
 	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = mm.(model)
 	if !m.isSetting {

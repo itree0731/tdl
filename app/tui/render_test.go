@@ -152,7 +152,7 @@ func TestMouseClickTogglesFormControlsAndFreezesAccount(t *testing.T) {
 	m = asModel(r)
 	boolIndex := 6 // Remove after upload.
 	first := max(0, m.formIx-max(1, m.mainHeight()-3)+1)
-	y := m.contentTop() + 2 + boolIndex - first
+	y := m.contentTop() + 3 + boolIndex - first
 	m = click(t, m, m.sidebarWidth()+2, y)
 	if !m.form.fields[boolIndex].boolVal {
 		t.Fatal("mouse click did not toggle boolean field")
@@ -278,6 +278,9 @@ func TestWideFormFooterButtonsAreVisibleAndClickable(t *testing.T) {
 	m.form.fields[0].paths = []string{"fixture.mp4"}
 	frame := m.frame()
 	plain := renderPlain(m)
+	if !strings.Contains(plain, "[ Select ]") {
+		t.Fatalf("wide picker button wrapped or disappeared:\n%s", plain)
+	}
 	lines := strings.Split(plain, "\n")
 	var run *HitRegion
 	for i := range frame.Regions {
@@ -297,6 +300,44 @@ func TestWideFormFooterButtonsAreVisibleAndClickable(t *testing.T) {
 	if !asModel(r).running {
 		t.Fatal("mouse Run button did not launch form")
 	}
+}
+
+func TestWideSidebarUsesPrimaryInformationArchitecture(t *testing.T) {
+	isolateSettings(t)
+	m := sized(t, newModel(stubExec, nil), 120, 30)
+	if m.actions[m.menuIx].id != "up" {
+		t.Fatalf("wide default action=%s, want up", m.actions[m.menuIx].id)
+	}
+	out := renderPlain(m)
+	for _, want := range []string{"Upload", "Download", "Chats", "Tasks", "Backup", "Recover", "Settings"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("wide navigation missing %q:\n%s", want, out)
+		}
+	}
+	m = key(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.actions[m.menuIx].id != "dl" {
+		t.Fatalf("next primary action=%s, want dl", m.actions[m.menuIx].id)
+	}
+	m = key(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.actions[m.menuIx].id != "chatls" {
+		t.Fatalf("next primary action=%s, want chat hub", m.actions[m.menuIx].id)
+	}
+	out = renderPlain(m)
+	if !strings.Contains(out, "Chat tools") || !strings.Contains(out, "Chat: Export") || !strings.Contains(out, "Chat: Users") {
+		t.Fatalf("chat hub missing operations:\n%s", out)
+	}
+	frame := m.frame()
+	for _, region := range frame.Regions {
+		if region.ID == "hub:chatexport" {
+			r, _ := m.Update(tea.MouseMsg{X: region.Rect.X, Y: region.Rect.Y, Button: tea.MouseButtonLeft})
+			opened := asModel(r)
+			if opened.form == nil || opened.form.id != "chatexport" {
+				t.Fatalf("chat export hub click opened %+v", opened.form)
+			}
+			return
+		}
+	}
+	t.Fatal("chat export hub has no mouse region")
 }
 
 func progressFixture() progress.Snapshot {

@@ -32,6 +32,7 @@ const (
 	UIActionButton
 	UIActionPicker
 	UIActionError
+	UIActionHub
 )
 
 type UIAction struct {
