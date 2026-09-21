@@ -46,7 +46,7 @@ func NewTUI() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			source := &tuiChatSource{storage: stg, cache: make(map[string][]tui.ChatRef), skipped: make(map[string]int)}
+			source := &tuiChatSource{storage: stg, cursors: make(map[string]map[int]*chat.DialogCursor)}
 			return tui.Run(cmd.Context(), execInTUI, namespaces, tui.WithChatSource(source))
 		},
 	}
@@ -55,62 +55,63 @@ func NewTUI() *cobra.Command {
 type tuiChatSource struct {
 	storage kv.Storage
 	mu      sync.Mutex
-	cache   map[string][]tui.ChatRef
-	skipped map[string]int
+	nextID  int
+	cursors map[string]map[int]*chat.DialogCursor
 }
 
 func (s *tuiChatSource) Page(ctx context.Context, namespace string, cursor *tui.ChatCursor, limit int) (tui.ChatPage, error) {
-	s.mu.Lock()
-	items, cached := s.cache[namespace]
-	skipped := s.skipped[namespace]
-	s.mu.Unlock()
-	if !cached {
-		kvd, err := s.storage.Open(namespace)
-		if err != nil {
-			return tui.ChatPage{}, errors.Wrap(err, "open chat namespace")
-		}
-		client, err := tclientpkg.New(ctx, tclientpkg.Options{
-			KV: kvd, Proxy: viper.GetString(consts.FlagProxy), NTP: viper.GetString(consts.FlagNTP), ReconnectTimeout: viper.GetDuration(consts.FlagReconnectTimeout),
-		}, false)
-		if err != nil {
-			return tui.ChatPage{}, errors.Wrap(err, "create chat selector client")
-		}
-		var dialogs []*chat.Dialog
-		err = client.Run(ctx, func(runCtx context.Context) error {
-			var listErr error
-			dialogs, skipped, listErr = chat.ListDialogs(runCtx, client, kvd, "true")
-			return listErr
-		})
-		if err != nil {
-			return tui.ChatPage{}, errors.Wrap(err, "load chats")
-		}
-		items = make([]tui.ChatRef, 0, len(dialogs))
-		for _, dialog := range dialogs {
-			topics := make([]tui.TopicRef, 0, len(dialog.Topics))
-			for _, topic := range dialog.Topics {
-				topics = append(topics, tui.TopicRef{ID: topic.ID, Title: topic.Title})
-			}
-			items = append(items, tui.ChatRef{ID: dialog.ID, Username: dialog.Username, Title: dialog.VisibleName, Type: dialog.Type, Topics: topics})
-		}
-		s.mu.Lock()
-		s.cache[namespace] = items
-		s.skipped[namespace] = skipped
-		s.mu.Unlock()
-	}
 	if limit <= 0 {
 		limit = 100
 	}
-	start := 0
+	var nativeCursor *chat.DialogCursor
 	if cursor != nil {
-		start = max(0, cursor.OffsetID)
+		s.mu.Lock()
+		nativeCursor = s.cursors[namespace][cursor.OffsetID]
+		s.mu.Unlock()
+		if nativeCursor == nil {
+			return tui.ChatPage{}, errors.Errorf("unknown chat cursor %d for namespace %q", cursor.OffsetID, namespace)
+		}
 	}
-	if start > len(items) {
-		start = len(items)
+	kvd, err := s.storage.Open(namespace)
+	if err != nil {
+		return tui.ChatPage{}, errors.Wrap(err, "open chat namespace")
 	}
-	end := min(len(items), start+limit)
-	page := tui.ChatPage{Items: append([]tui.ChatRef(nil), items[start:end]...), Skipped: skipped}
-	if end < len(items) {
-		page.Next = &tui.ChatCursor{OffsetID: end}
+	client, err := tclientpkg.New(ctx, tclientpkg.Options{
+		KV: kvd, Proxy: viper.GetString(consts.FlagProxy), NTP: viper.GetString(consts.FlagNTP), ReconnectTimeout: viper.GetDuration(consts.FlagReconnectTimeout),
+	}, false)
+	if err != nil {
+		return tui.ChatPage{}, errors.Wrap(err, "create chat selector client")
+	}
+	var dialogs []*chat.Dialog
+	var next *chat.DialogCursor
+	var skipped int
+	err = client.Run(ctx, func(runCtx context.Context) error {
+		var listErr error
+		dialogs, next, skipped, listErr = chat.ListDialogsPage(runCtx, client, kvd, nativeCursor, limit)
+		return listErr
+	})
+	if err != nil {
+		return tui.ChatPage{}, errors.Wrap(err, "load chat page")
+	}
+	items := make([]tui.ChatRef, 0, len(dialogs))
+	for _, dialog := range dialogs {
+		topics := make([]tui.TopicRef, 0, len(dialog.Topics))
+		for _, topic := range dialog.Topics {
+			topics = append(topics, tui.TopicRef{ID: topic.ID, Title: topic.Title})
+		}
+		items = append(items, tui.ChatRef{ID: dialog.ID, Username: dialog.Username, Title: dialog.VisibleName, Type: dialog.Type, Topics: topics})
+	}
+	page := tui.ChatPage{Items: items, Skipped: skipped}
+	if next != nil {
+		s.mu.Lock()
+		s.nextID++
+		token := s.nextID
+		if s.cursors[namespace] == nil {
+			s.cursors[namespace] = make(map[int]*chat.DialogCursor)
+		}
+		s.cursors[namespace][token] = next
+		s.mu.Unlock()
+		page.Next = &tui.ChatCursor{OffsetID: token}
 	}
 	return page, nil
 }

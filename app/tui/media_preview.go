@@ -20,6 +20,14 @@ type MediaPreview interface {
 	Render(path string, widthCells, heightCells int, profile ColorProfile) (string, error)
 }
 
+type mediaPreviewMsg struct {
+	screenID uint64
+	runID    uint64
+	path     string
+	text     string
+	err      error
+}
+
 type previewCacheEntry struct {
 	key, value string
 }

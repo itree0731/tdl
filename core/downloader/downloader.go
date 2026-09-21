@@ -62,6 +62,9 @@ func (d *Downloader) download(ctx context.Context, elem Elem) error {
 		return ctx.Err()
 	default:
 	}
+	if prepared, ok := elem.(PreparedElem); ok && prepared.SkipTransfer() {
+		return nil
+	}
 
 	logctx.From(ctx).Debug("Start download elem",
 		zap.Any("elem", elem))

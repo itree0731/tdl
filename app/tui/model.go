@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,12 +74,17 @@ type model struct {
 	runResult         RunResult
 	picker            *filePicker
 	pickerField       int
+	pickerScanID      uint64
 	chatSource        ChatSource
 	chatPicker        *chatPicker
 	chatField         int
 	retryPrompt       bool
 	colorProfile      ColorProfile
 	mediaPreview      MediaPreview
+	previewPath       string
+	previewText       string
+	previewErr        string
+	previewLoading    bool
 	runStart          time.Time
 	runLast           time.Duration
 	progress          xprogress.Snapshot
@@ -273,12 +279,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case progressSnapshotMsg:
+		var previewCmd tea.Cmd
 		if msg.runID == m.runID && m.running {
 			m.progress = msg.snapshot
 			m.appendProgressLog()
 			m.renderViewport()
+			if msg.snapshot.CurrentSourcePath != "" && msg.snapshot.CurrentSourcePath != m.previewPath {
+				previewCmd = m.startMediaPreview(msg.snapshot.CurrentSourcePath)
+			}
 		}
-		return m, nil
+		return m, previewCmd
 	case progressMsg:
 		if msg.runID != m.runID || !m.running {
 			return m, nil
@@ -331,6 +341,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.chatPicker.apply(msg.page, msg.err, m.set.RecentChats[m.currentNS()])
+		return m, nil
+
+	case selectionScanTickMsg:
+		if m.picker == nil || m.picker.scanner == nil || msg.screenID != m.screenID || msg.scanID != m.picker.scanner.id {
+			return m, nil
+		}
+		return m, tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+			return selectionScanTickMsg{screenID: msg.screenID, scanID: msg.scanID}
+		})
+
+	case selectionScanMsg:
+		if m.picker == nil || m.picker.scanner == nil || msg.screenID != m.screenID || msg.scanID != m.picker.scanner.id {
+			return m, nil
+		}
+		m.picker.scanner = nil
+		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) {
+				m.picker.err = m.lang.t("picker.scan.canceled")
+			} else {
+				m.picker.err = msg.err.Error()
+			}
+			return m, nil
+		}
+		return m.applyFilePickerPlan(msg.plan)
+
+	case mediaPreviewMsg:
+		if msg.screenID != m.screenID || msg.runID != m.runID || msg.path != m.previewPath {
+			return m, nil
+		}
+		m.previewLoading = false
+		m.previewText = msg.text
+		m.previewErr = ""
+		if msg.err != nil {
+			m.previewErr = msg.err.Error()
+		}
 		return m, nil
 
 	case tea.MouseMsg:
@@ -433,6 +478,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Ctrl+C: stop a running command first, quit on the next press — an
 	// exec that ignores cancellation must never trap the user in the TUI
 	if msg.Type == tea.KeyCtrlC {
+		if m.state() == screenFilePicker && m.picker != nil && m.picker.scanner != nil {
+			return m.closeFilePicker(false)
+		}
 		if m.isSetting {
 			m.updateSettingsDirty()
 			if m.settingsDirty {
@@ -576,6 +624,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.picker == nil {
 			return m, nil
 		}
+		if m.picker.scanner != nil {
+			switch msg.String() {
+			case "esc", "q", "ctrl+c":
+				return m.closeFilePicker(false)
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "up", "k":
 			m.picker.cursor = max(0, m.picker.cursor-1)
@@ -624,10 +679,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter", "c":
 			return m.closeChatSelector(true)
 		case "l":
-			if p.next != nil && !p.loading {
-				p.loading = true
-				return m, loadChatPageCmd(m.ctx, m.chatSource, p.namespace, p.next, m.screenID)
-			}
+			return m.loadMoreChats()
 		case "r":
 			if !p.loading {
 				p.loading = true
@@ -830,12 +882,26 @@ func (m model) closeChatSelector(apply bool) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) loadMoreChats() (tea.Model, tea.Cmd) {
+	if m.chatPicker == nil || m.chatPicker.next == nil || m.chatPicker.loading {
+		return m, nil
+	}
+	m.chatPicker.loading = true
+	return m, loadChatPageCmd(m.ctx, m.chatSource, m.chatPicker.namespace, m.chatPicker.next, m.screenID)
+}
+
 func (m model) closeFilePicker(apply bool) (tea.Model, tea.Cmd) {
 	if m.picker == nil || m.form == nil || m.pickerField >= len(m.form.fields) {
 		m.picker = nil
 		return m, nil
 	}
 	if !apply {
+		if m.picker.scanner != nil {
+			m.picker.scanner.cancel()
+			m.picker.scanner = nil
+			m.picker.err = m.lang.t("picker.scan.canceled")
+			return m, nil
+		}
 		m.picker = nil
 		m.screenID++
 		return m, nil
@@ -859,7 +925,40 @@ func (m model) closeFilePicker(apply bool) (tea.Model, tea.Cmd) {
 		m.picker.err = m.lang.t("picker.empty")
 		return m, nil
 	}
-	plan := buildSelectionPlan(m.picker.request, paths)
+	m.picker.pendingPaths = append([]string(nil), paths...)
+	if m.picker.request.Mode == PickSaveFile || m.picker.request.Mode == PickDirectory {
+		return m.applyFilePickerPlan(SelectionPlan{Paths: append([]string(nil), paths...)})
+	}
+	if m.picker.scanner != nil {
+		return m, nil
+	}
+	m.pickerScanID++
+	ctx, cancel := context.WithCancel(m.ctx)
+	scanner := &selectionScanner{id: m.pickerScanID, cancel: cancel}
+	m.picker.scanner = scanner
+	m.picker.err = ""
+	screenID := m.screenID
+	req := m.picker.request
+	selected := append([]string(nil), paths...)
+	scanCmd := func() tea.Msg {
+		plan, err := scanSelectionPlan(ctx, req, selected, scanner)
+		return selectionScanMsg{screenID: screenID, scanID: scanner.id, plan: plan, err: err}
+	}
+	tickCmd := tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+		return selectionScanTickMsg{screenID: screenID, scanID: scanner.id}
+	})
+	return m, tea.Batch(scanCmd, tickCmd)
+}
+
+func (m model) applyFilePickerPlan(plan SelectionPlan) (tea.Model, tea.Cmd) {
+	if m.picker == nil || m.form == nil || m.pickerField >= len(m.form.fields) {
+		return m, nil
+	}
+	f := &m.form.fields[m.pickerField]
+	paths := append([]string(nil), m.picker.pendingPaths...)
+	if len(paths) == 0 {
+		paths = append(paths, plan.Paths...)
+	}
 	if m.picker.request.Mode != PickSaveFile && len(plan.Problems) > 0 {
 		m.picker.err = plan.Problems[0].Path + ": " + plan.Problems[0].Err
 		return m, nil
@@ -920,6 +1019,10 @@ func (m model) launchRunSpec(run RunSpec) (tea.Model, tea.Cmd) {
 	m.stopReq = false
 	m.lastLoggedFile = ""
 	m.lastLoggedPct = -1
+	m.previewPath = ""
+	m.previewText = ""
+	m.previewErr = ""
+	m.previewLoading = false
 
 	m.runID++
 	m.progressCollector = xprogress.NewCollector()
@@ -1060,12 +1163,39 @@ func (m *model) toMenu() {
 	m.cancelRun = nil
 	m.currentRun = RunSpec{}
 	m.runResult = RunResult{}
+	m.previewPath = ""
+	m.previewText = ""
+	m.previewErr = ""
+	m.previewLoading = false
 	m.picker = nil
 	m.pickerField = 0
 	m.chatPicker = nil
 	m.chatField = 0
 	m.retryPrompt = false
 	m.vp.SetContent("")
+}
+
+func (m *model) startMediaPreview(path string) tea.Cmd {
+	m.previewPath = path
+	m.previewText = ""
+	m.previewErr = ""
+	m.previewLoading = true
+	renderer := m.mediaPreview
+	profile := m.colorProfile
+	screenID, runID := m.screenID, m.runID
+	width, height := 24, 8
+	if chooseLayout(m.width, m.height) == layoutWide {
+		previewW := min(32, max(24, m.contentWidth()/5))
+		topH := min(18, max(12, m.mainHeight()*38/100))
+		width, height = max(8, previewW-4), max(3, topH-5)
+	}
+	return func() tea.Msg {
+		if renderer == nil {
+			return mediaPreviewMsg{screenID: screenID, runID: runID, path: path, err: fmt.Errorf("media preview unavailable")}
+		}
+		text, err := renderer.Render(path, width, height, profile)
+		return mediaPreviewMsg{screenID: screenID, runID: runID, path: path, text: text, err: err}
+	}
 }
 
 func (m model) state() state {
@@ -1372,6 +1502,17 @@ func (m model) viewCompactNav() string {
 
 func (m model) hitRegions() []HitRegion {
 	regions := make([]HitRegion, 0, len(m.actions)+len(m.namespaces)+len(m.formFields()))
+	if m.state() == screenConfirm {
+		_, _, x, y := m.retryConfirmGeometry()
+		retryLabel := "[ " + m.lang.t("retry.anyway") + " ]"
+		cancelLabel := "[ " + m.lang.t("picker.cancel") + " ]"
+		retryX := x + 2
+		buttonY := y + 5
+		return []HitRegion{
+			{ID: "retry.anyway", Rect: Rect{X: retryX, Y: buttonY, W: lipgloss.Width(retryLabel), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: "run.retry"}},
+			{ID: "retry.cancel", Rect: Rect{X: retryX + lipgloss.Width(retryLabel) + 2, Y: buttonY, W: lipgloss.Width(cancelLabel), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: "retry.cancel"}},
+		}
+	}
 	accountY := 0
 	if chooseLayout(m.width, m.height) == layoutWide {
 		accountY = 1
@@ -1416,6 +1557,8 @@ func (m model) hitRegions() []HitRegion {
 	var buttons []uiButton
 	if m.isSetting {
 		buttons = m.settingsButtons()
+	} else if m.state() == stateForm {
+		buttons = m.formButtons()
 	} else if m.state() == stateRun {
 		buttons = m.runButtons()
 	}
@@ -1570,7 +1713,12 @@ func (m model) viewShortcuts() string {
 	case screenChatPicker:
 		return sc("↑↓", m.lang.t("sc.updown"), "type", m.lang.t("chat.search"), "c", m.lang.t("chat.confirm"), "esc", m.lang.t("picker.cancel"))
 	default:
-		return sc("↑↓", m.lang.t("sc.scroll"), "enter", m.lang.t("form.back"),
-			"d", m.lang.t("run.details"), "ctrl+c", m.lang.t("sc.ctrlc"), "ctrl+c ×2", m.lang.t("sc.quit"))
+		if !m.running {
+			if len(m.runResult.Items) > 0 {
+				return sc("r", m.lang.t("run.retry"), "d", m.lang.t("run.details"), "enter", m.lang.t("form.back"))
+			}
+			return sc("d", m.lang.t("run.details"), "enter", m.lang.t("form.back"))
+		}
+		return sc("↑↓", m.lang.t("sc.scroll"), "d", m.lang.t("run.details"), "ctrl+c", m.lang.t("sc.ctrlc"), "ctrl+c ×2", m.lang.t("sc.quit"))
 	}
 }

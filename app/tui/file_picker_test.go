@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -137,8 +138,13 @@ func TestUploadPickerProducesExactRepeatedPathArgs(t *testing.T) {
 			m.picker.toggleCurrent()
 		}
 	}
-	r, _ = m.closeFilePicker(true)
+	var scanCmd tea.Cmd
+	r, scanCmd = m.closeFilePicker(true)
 	m = asModel(r)
+	if m.picker == nil || m.picker.scanner == nil || scanCmd == nil {
+		t.Fatal("recursive confirmation did not start background scan")
+	}
+	deliverSelectionScan(t, &m, scanCmd)
 	if m.state() != stateForm || len(m.form.fields[0].paths) != 2 {
 		t.Fatalf("selection was not expanded: %+v", m.form.fields[0].paths)
 	}
@@ -161,6 +167,88 @@ func TestUploadPickerProducesExactRepeatedPathArgs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(paths, m.form.fields[0].paths) {
 		t.Fatalf("-p args = %v, want %v; argv=%v", paths, m.form.fields[0].paths, executed)
+	}
+}
+
+func deliverSelectionScan(t *testing.T, m *model, cmd tea.Cmd) {
+	t.Helper()
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("scan command returned %T, want tea.BatchMsg", msg)
+	}
+	for _, sub := range batch {
+		if sub == nil {
+			continue
+		}
+		candidate := sub()
+		if _, ok := candidate.(selectionScanMsg); !ok {
+			continue
+		}
+		r, _ := m.Update(candidate)
+		*m = asModel(r)
+		return
+	}
+	t.Fatal("background scan produced no completion message")
+}
+
+func TestRecursiveScanCanBeCanceledWithoutApplyingSelection(t *testing.T) {
+	isolateSettings(t)
+	root := t.TempDir()
+	dir := filepath.Join(root, "many")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%02d.bin", i)), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := sized(t, newModel(stubExec, nil), 120, 30)
+	r, _ := m.openMenuItem(indexOfAction(m, "up"))
+	m = asModel(r)
+	m.form.fields[0].picker.InitialDir = root
+	r, _ = m.openFilePicker(0)
+	m = asModel(r)
+	for i, entry := range m.picker.entries {
+		if entry.Path == dir {
+			m.picker.cursor = i
+			m.picker.toggleCurrent()
+		}
+	}
+	r, scanCmd := m.closeFilePicker(true)
+	m = asModel(r)
+	if m.picker.scanner == nil || scanCmd == nil {
+		t.Fatal("scan did not start")
+	}
+	r, _ = m.closeFilePicker(false)
+	m = asModel(r)
+	if m.picker == nil || m.picker.scanner != nil || m.form.fields[0].value() != "" {
+		t.Fatalf("cancel applied or closed selection: picker=%v value=%q", m.picker != nil, m.form.fields[0].value())
+	}
+	deliverSelectionScanIgnored(t, &m, scanCmd)
+	if m.picker == nil || m.form.fields[0].value() != "" {
+		t.Fatal("late canceled scan result polluted form")
+	}
+}
+
+func deliverSelectionScanIgnored(t *testing.T, m *model, cmd tea.Cmd) {
+	t.Helper()
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return
+	}
+	for _, sub := range batch {
+		if sub == nil {
+			continue
+		}
+		candidate := sub()
+		if _, ok := candidate.(selectionScanMsg); ok {
+			r, _ := m.Update(candidate)
+			*m = asModel(r)
+			return
+		}
 	}
 }
 
@@ -201,5 +289,44 @@ func TestFilePickerCanOpenWithEnterAndVisibleMouseButton(t *testing.T) {
 		if asModel(r).state() != screenFilePicker {
 			t.Fatalf("%dx%d mouse click did not open picker", size.w, size.h)
 		}
+	}
+}
+
+func TestFilePickerHeaderControlsAreClickable(t *testing.T) {
+	isolateSettings(t)
+	root := t.TempDir()
+	for _, name := range []string{"file2.txt", "file10.txt", ".hidden.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := sized(t, newModel(stubExec, nil), 120, 30)
+	r, _ := m.openMenuItem(indexOfAction(m, "up"))
+	m = asModel(r)
+	m.form.fields[0].picker.InitialDir = root
+	r, _ = m.openFilePicker(0)
+	m = asModel(r)
+	if len(m.picker.entries) != 2 {
+		t.Fatalf("hidden file visible by default: %+v", m.picker.entries)
+	}
+	clickRegion := func(id string) {
+		t.Helper()
+		frame := m.frame()
+		for _, region := range frame.Regions {
+			if region.ID == id {
+				r, _ := m.Update(tea.MouseMsg{X: region.Rect.X, Y: region.Rect.Y, Button: tea.MouseButtonLeft})
+				m = asModel(r)
+				return
+			}
+		}
+		t.Fatalf("missing region %q", id)
+	}
+	clickRegion("picker.hidden")
+	if !m.picker.request.ShowHidden || len(m.picker.entries) != 3 {
+		t.Fatalf("hidden toggle failed: show=%v entries=%d", m.picker.request.ShowHidden, len(m.picker.entries))
+	}
+	clickRegion("picker.sort.name")
+	if !m.picker.desc || m.picker.entries[0].Name != "file10.txt" {
+		t.Fatalf("name sort toggle failed: desc=%v entries=%+v", m.picker.desc, m.picker.entries)
 	}
 }

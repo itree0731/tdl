@@ -2,14 +2,70 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type memoryChatSource struct {
 	pages map[string][]ChatPage
 	calls map[string]int
+}
+
+func TestChatPickerMouseLoadMoreUsesVisibleButton(t *testing.T) {
+	isolateSettings(t)
+	source := &memoryChatSource{pages: map[string][]ChatPage{
+		"default": {
+			{Items: []ChatRef{{ID: 1, Title: "First"}}, Next: &ChatCursor{OffsetID: 1}},
+			{Items: []ChatRef{{ID: 2, Title: "Second"}}},
+		},
+	}}
+	m := sized(t, newModel(stubExec, []string{"default"}, WithChatSource(source)), 120, 30)
+	r, _ := m.openMenuItem(indexOfAction(m, "up"))
+	m = asModel(r)
+	r, cmd := m.openChatSelector(1)
+	m = asModel(r)
+	r, _ = m.Update(cmd())
+	m = asModel(r)
+	frame := m.frame()
+	var more *HitRegion
+	for i := range frame.Regions {
+		if frame.Regions[i].ID == "chat.more" {
+			more = &frame.Regions[i]
+			break
+		}
+	}
+	if more == nil || !more.Enabled {
+		t.Fatal("visible Load more button has no enabled hit region")
+	}
+	plain := renderPlain(m)
+	lines := strings.Split(plain, "\n")
+	visibleY := -1
+	for i, line := range lines {
+		if strings.Contains(line, "Load more") {
+			visibleY = i
+			break
+		}
+	}
+	if visibleY != more.Rect.Y {
+		t.Fatalf("Load more rendered at y=%d but hit region uses y=%d\n%s", visibleY, more.Rect.Y, plain)
+	}
+	segment := ansi.Cut(lines[more.Rect.Y], more.Rect.X, more.Rect.X+more.Rect.W)
+	if !strings.Contains(segment, "Load more") {
+		t.Fatalf("hit region does not cover Load more: %q rect=%+v\n%s", segment, more.Rect, plain)
+	}
+	r, cmd = m.Update(tea.MouseMsg{X: more.Rect.X, Y: more.Rect.Y, Button: tea.MouseButtonLeft})
+	m = asModel(r)
+	if cmd == nil || !m.chatPicker.loading {
+		t.Fatal("mouse click did not start next page")
+	}
+	r, _ = m.Update(cmd())
+	m = asModel(r)
+	if len(m.chatPicker.items) != 3 || m.chatPicker.items[2].ID != 2 {
+		t.Fatalf("next page was not appended: %+v", m.chatPicker.items)
+	}
 }
 
 func (s *memoryChatSource) Page(_ context.Context, namespace string, cursor *ChatCursor, _ int) (ChatPage, error) {

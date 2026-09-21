@@ -4,8 +4,12 @@ import (
 	"context"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	xprogress "github.com/iyear/tdl/pkg/progress"
 )
@@ -56,5 +60,36 @@ func TestUncertainRetryRequiresExplicitConfirmation(t *testing.T) {
 	m = asModel(r)
 	if !m.retryPrompt || m.running || m.state() != screenConfirm {
 		t.Fatalf("uncertain retry state: prompt=%v running=%v state=%v", m.retryPrompt, m.running, m.state())
+	}
+}
+
+func TestUncertainRetryConfirmationHasMouseControls(t *testing.T) {
+	isolateSettings(t)
+	m := sized(t, newModel(stubExec, nil), 120, 30)
+	m.showOutput = true
+	m.currentRun = RunSpec{ActionID: "up", Args: []string{"up", "-p", "maybe.mp4"}}
+	m.runResult = RunResult{Items: []ItemResult{{SourcePath: "maybe.mp4", Retry: RetryUncertain}}}
+	r, _ := m.retryFailed(false)
+	m = asModel(r)
+	frame := m.frame()
+	plain := renderPlain(m)
+	lines := strings.Split(plain, "\n")
+	var cancel *HitRegion
+	for i := range frame.Regions {
+		if frame.Regions[i].ID == "retry.cancel" {
+			cancel = &frame.Regions[i]
+			break
+		}
+	}
+	if cancel == nil || cancel.Rect.Y >= len(lines) {
+		t.Fatalf("missing retry cancel region: %+v", cancel)
+	}
+	visible := ansi.Cut(lines[cancel.Rect.Y], cancel.Rect.X, cancel.Rect.X+cancel.Rect.W)
+	if !strings.Contains(visible, "Cancel") {
+		t.Fatalf("cancel region does not cover visible button: %q rect=%+v\n%s", visible, cancel.Rect, plain)
+	}
+	r, _ = m.Update(tea.MouseMsg{X: cancel.Rect.X, Y: cancel.Rect.Y, Button: tea.MouseButtonLeft})
+	if asModel(r).retryPrompt {
+		t.Fatal("mouse cancel did not close retry confirmation")
 	}
 }

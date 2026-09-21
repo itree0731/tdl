@@ -101,6 +101,28 @@ func (m model) viewWideHeader(width int) string {
 func (m model) viewWideFooter() string {
 	left := stHint.Render("[TDL]  ") + activeTheme.text.Render("Telegram Media Transfer")
 	right := m.viewShortcuts()
+	if m.state() == stateForm {
+		buttons := m.formButtons()
+		if m.isSetting {
+			buttons = m.settingsButtons()
+		}
+		labels := make([]string, 0, len(buttons))
+		for i, button := range buttons {
+			label := button.label
+			if m.isSetting && m.settingsButton == i {
+				label = stFieldFocus.Render(label)
+			}
+			labels = append(labels, label)
+		}
+		right = strings.Join(labels, " ")
+	} else if m.state() == stateRun && !m.running {
+		buttons := m.runButtons()
+		labels := make([]string, 0, len(buttons))
+		for _, button := range buttons {
+			labels = append(labels, button.label)
+		}
+		right = strings.Join(labels, " ")
+	}
 	if m.state() == stateRun && m.running {
 		current := fmt.Sprintf("%d/%d", m.progress.Succeeded+m.progress.Failed+m.progress.Canceled, max(m.progress.Expected, m.progress.Discovered))
 		right = stSys.Render("↑ "+xBytesPerSecond(m.progress.Speed)) + stShortcutSep.Render("  │  ") + stHint.Render(m.lang.t("footer.task")+": ") + stSys.Render(current)

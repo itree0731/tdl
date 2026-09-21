@@ -32,8 +32,13 @@ func (m model) viewFilePicker() string {
 	}
 	width := m.contentWidth()
 	p := m.picker
+	hiddenState := m.lang.t("form.bool.off")
+	if p.request.ShowHidden {
+		hiddenState = m.lang.t("form.bool.on")
+	}
+	controls := stHint.Render("[↑ " + m.lang.t("picker.parent") + "]  [↻ " + m.lang.t("picker.refresh") + "]  [" + m.lang.t("picker.hidden") + ":" + hiddenState + "]")
 	rows := []string{
-		stTitle.Render(m.lang.t("picker.title")) + "  " + stHint.Render(m.lang.t("picker.purpose")+": ") + stFieldFocus.Render(p.request.Purpose),
+		joinEdges(stTitle.Render(m.lang.t("picker.title"))+"  "+stHint.Render(m.lang.t("picker.purpose")+": ")+stFieldFocus.Render(p.request.Purpose), controls, max(1, width-2)),
 		stSys.Render(ansi.Truncate(p.cwd, max(1, width-2), "…")),
 	}
 	if width >= 64 {
@@ -77,15 +82,20 @@ func (m model) viewFilePicker() string {
 		}
 		rows = append(rows, row)
 	}
-	for len(rows) < m.mainHeight()-2 {
+	for len(rows) < m.mainHeight()-4 {
 		rows = append(rows, "")
 	}
-	if p.err != "" {
+	if p.scanner != nil {
+		rows = append(rows, stFieldFocus.Render("◐ "+m.lang.t("picker.scanning"))+"  "+stSys.Render(p.summary()))
+	} else if p.err != "" {
 		rows = append(rows, stErr.Render(ansi.Truncate(p.err, max(1, width-2), "…")))
 	} else {
 		rows = append(rows, stHint.Render(m.lang.t("picker.selected")+" ")+stSys.Render(p.summary()))
 	}
 	buttons := stFieldFocus.Render("[ "+m.lang.t("picker.confirm")+" ]") + "  " + stHint.Render("[ "+m.lang.t("picker.parent")+" ]  [ "+m.lang.t("picker.cancel")+" ]")
+	if p.scanner != nil {
+		buttons = activeTheme.warning.Render("[ " + m.lang.t("picker.cancel.scan") + " ]")
+	}
 	rows = append(rows, buttons)
 	return lipgloss.NewStyle().Width(width).Height(m.mainHeight()).Padding(0, 1).Render(fitScreen(strings.Join(rows, "\n"), width, m.mainHeight()))
 }
@@ -104,8 +114,47 @@ func (m model) pickerRegions() []HitRegion {
 		return nil
 	}
 	x := m.sidebarWidth()
+	if m.picker.scanner != nil {
+		y := m.contentTop() + m.mainHeight() - 1
+		return []HitRegion{{ID: "picker.cancel", Rect: Rect{X: x + 1, Y: y, W: 18, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: "picker.cancel"}}}
+	}
 	first, count := m.pickerWindow()
-	regions := make([]HitRegion, 0, count+3)
+	regions := make([]HitRegion, 0, count+10)
+	topY := m.contentTop()
+	hiddenState := m.lang.t("form.bool.off")
+	if m.picker.request.ShowHidden {
+		hiddenState = m.lang.t("form.bool.on")
+	}
+	controlLabels := []struct{ id, label string }{
+		{"picker.parent", "[↑ " + m.lang.t("picker.parent") + "]"},
+		{"picker.refresh", "[↻ " + m.lang.t("picker.refresh") + "]"},
+		{"picker.hidden", "[" + m.lang.t("picker.hidden") + ":" + hiddenState + "]"},
+	}
+	totalControls := 0
+	for i, control := range controlLabels {
+		totalControls += lipgloss.Width(control.label)
+		if i > 0 {
+			totalControls += 2
+		}
+	}
+	controlX := max(x+1, m.width-totalControls-1)
+	for _, control := range controlLabels {
+		w := lipgloss.Width(control.label)
+		regions = append(regions, HitRegion{ID: control.id, Rect: Rect{X: controlX, Y: topY, W: w, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: control.id}})
+		controlX += w + 2
+	}
+	if m.contentWidth() >= 64 {
+		nameW := max(16, m.contentWidth()-39)
+		headerX := x + 1
+		columns := []struct {
+			id string
+			w  int
+		}{{"picker.sort.name", nameW}, {"picker.sort.modified", 18}, {"picker.sort.size", 11}, {"picker.sort.type", max(1, m.contentWidth()-nameW-29)}}
+		for _, column := range columns {
+			regions = append(regions, HitRegion{ID: column.id, Rect: Rect{X: headerX, Y: m.contentTop() + 2, W: column.w, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: column.id}})
+			headerX += column.w
+		}
+	}
 	for i := first; i < first+count; i++ {
 		regions = append(regions, HitRegion{
 			ID: fmt.Sprintf("picker:row:%d", i), Rect: Rect{X: x, Y: m.contentTop() + 3 + i - first, W: m.contentWidth(), H: 1}, Enabled: true,

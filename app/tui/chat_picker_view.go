@@ -61,16 +61,18 @@ func (m model) viewChatPicker() string {
 		}
 		rows = append(rows, row)
 	}
-	for len(rows) < m.mainHeight()-3 {
+	for len(rows) < m.mainHeight()-5 {
 		rows = append(rows, "")
 	}
+	topicRow := ""
 	if current, ok := p.current(); ok && len(current.Topics) > 0 {
 		topic := m.lang.t("chat.main")
 		if p.topic >= 0 && p.topic < len(current.Topics) {
 			topic = fmt.Sprintf("%d · %s", current.Topics[p.topic].ID, current.Topics[p.topic].Title)
 		}
-		rows = append(rows, stHint.Render(m.lang.t("chat.topic")+": ")+stSys.Render(topic))
+		topicRow = stHint.Render(m.lang.t("chat.topic")+": ") + stSys.Render(topic)
 	}
+	rows = append(rows, topicRow)
 	if p.err != "" {
 		rows = append(rows, stErr.Render(ansi.Truncate(p.err, max(1, width-2), "…")))
 	} else if p.loading {
@@ -95,6 +97,23 @@ func (m model) chatRegions() []HitRegion {
 			ID: fmt.Sprintf("chat:row:%d", visible), Rect: Rect{X: x, Y: m.contentTop() + 3 + visible - first, W: m.contentWidth(), H: 1}, Enabled: true,
 			Action: UIAction{Kind: UIActionPicker, ID: "chat", Index: visible},
 		})
+	}
+	y := m.contentTop() + m.mainHeight() - 1
+	xPos := x + 1
+	buttons := []struct {
+		id, label string
+		enabled   bool
+	}{
+		{"chat.confirm", m.lang.t("chat.confirm"), true},
+		{"chat.more", m.lang.t("chat.more"), m.chatPicker.next != nil && !m.chatPicker.loading},
+		{"chat.manual", m.lang.t("chat.manual"), true},
+		{"chat.cancel", m.lang.t("picker.cancel"), true},
+	}
+	for _, button := range buttons {
+		label := "[ " + button.label + " ]"
+		w := lipgloss.Width(label)
+		regions = append(regions, HitRegion{ID: button.id, Rect: Rect{X: xPos, Y: y, W: w, H: 1}, Enabled: button.enabled, Action: UIAction{Kind: UIActionButton, ID: button.id}})
+		xPos += w + 2
 	}
 	return regions
 }

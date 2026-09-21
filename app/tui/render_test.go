@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/iyear/tdl/pkg/progress"
 )
 
@@ -226,6 +227,7 @@ func TestRenderWideWorkbenchSnapshot(t *testing.T) {
 	m.runStart = time.Now().Add(-time.Minute)
 	m.currentRun = RunSpec{ActionID: "up", Display: RunDisplay{Title: "上传"}, Inputs: []InputRef{{Path: "fixture.mp4", Kind: "file"}}}
 	m.mediaPreview = fixturePreview{}
+	m.previewText, _ = m.mediaPreview.Render("fixture.mp4", 24, 6, ColorTrue)
 	m.progress = progressFixture()
 	for _, line := range []string{"$ tdl up -p fixture.mp4", "开始上传 fixture.mp4", "连接到 Telegram 服务器", "已传输 2.96 GiB / 4.32 GiB"} {
 		m.appendLine(line)
@@ -241,6 +243,34 @@ func TestRenderWideWorkbenchSnapshot(t *testing.T) {
 		t.Errorf("wide workbench has duplicate stop controls:\n%s", out)
 	}
 	assertFrameFits(t, m, 200, 60)
+}
+
+func TestWideFormFooterButtonsAreVisibleAndClickable(t *testing.T) {
+	isolateSettings(t)
+	m := sized(t, newModel(stubExec, nil), 120, 30)
+	r, _ := m.openMenuItem(indexOfAction(m, "up"))
+	m = asModel(r)
+	frame := m.frame()
+	plain := renderPlain(m)
+	lines := strings.Split(plain, "\n")
+	var run *HitRegion
+	for i := range frame.Regions {
+		if frame.Regions[i].ID == "button:form.run" {
+			run = &frame.Regions[i]
+			break
+		}
+	}
+	if run == nil || run.Rect.Y >= len(lines) {
+		t.Fatalf("missing form Run button region: %+v", run)
+	}
+	visible := ansi.Cut(lines[run.Rect.Y], run.Rect.X, run.Rect.X+run.Rect.W)
+	if !strings.Contains(visible, "Run") {
+		t.Fatalf("Run hit region does not cover visible button: %q rect=%+v\n%s", visible, run.Rect, plain)
+	}
+	r, _ = m.Update(tea.MouseMsg{X: run.Rect.X, Y: run.Rect.Y, Button: tea.MouseButtonLeft})
+	if !asModel(r).running {
+		t.Fatal("mouse Run button did not launch form")
+	}
 }
 
 func progressFixture() progress.Snapshot {

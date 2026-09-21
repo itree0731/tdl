@@ -67,11 +67,12 @@ func (m model) currentMediaPath() string {
 func (m model) viewMediaCard(width, height int) string {
 	path := m.currentMediaPath()
 	body := []string{stHint.Render("MEDIA")}
-	previewH := max(3, height-5)
-	if path != "" && m.mediaPreview != nil {
-		if rendered, err := m.mediaPreview.Render(path, max(8, width-4), previewH, m.colorProfile); err == nil {
-			body = append(body, rendered)
-		}
+	if m.previewText != "" {
+		body = append(body, m.previewText)
+	} else if m.previewLoading {
+		body = append(body, stFieldFocus.Render("◐ "+m.lang.t("preview.loading")))
+	} else if m.previewErr != "" {
+		body = append(body, stHint.Render(ansi.Truncate(m.previewErr, max(8, width-4), "…")))
 	}
 	if len(body) == 1 {
 		body = append(body, stHint.Render(m.lang.t("preview.waiting")))

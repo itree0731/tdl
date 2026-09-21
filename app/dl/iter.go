@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"text/template"
 	"time"
@@ -294,7 +295,7 @@ func (i *iter) processSingle(ctx context.Context, message *tg.Message, from peer
 		return false, false
 	}
 
-	to, err := os.Create(path)
+	to, skipTransfer, _, err := openDownloadTarget(path, item.Size)
 	if err != nil {
 		i.err = errors.Wrap(err, "create file")
 		return false, false
@@ -308,12 +309,36 @@ func (i *iter) processSingle(ctx context.Context, message *tg.Message, from peer
 		fromMsg: message,
 		file:    item,
 
-		to: to,
+		to:           to,
+		skipTransfer: skipTransfer,
 
 		opts: i.opts,
 	}
 
 	return true, false
+}
+
+func openDownloadTarget(path string, expected int64) (file *os.File, skipTransfer bool, backupPath string, err error) {
+	if stat, statErr := os.Stat(path); statErr == nil {
+		if !stat.Mode().IsRegular() {
+			return nil, false, "", fmt.Errorf("temporary download path is not a regular file: %s", path)
+		}
+		if expected > 0 && stat.Size() == expected {
+			file, err = os.OpenFile(path, os.O_RDWR, 0)
+			return file, true, "", err
+		}
+		if stat.Size() > 0 {
+			base := strings.TrimSuffix(path, tempExt)
+			backupPath = fmt.Sprintf("%s.%s.partial.bak", base, time.Now().Format("20060102-150405.000"))
+			if err = os.Rename(path, backupPath); err != nil {
+				return nil, false, "", fmt.Errorf("backup partial download: %w", err)
+			}
+		}
+	} else if !os.IsNotExist(statErr) {
+		return nil, false, "", statErr
+	}
+	file, err = os.Create(path)
+	return file, false, backupPath, err
 }
 
 func (i *iter) processGrouped(ctx context.Context, message *tg.Message, from peers.Peer, startLogicalPos int) (bool, bool) {

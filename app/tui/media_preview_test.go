@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -9,6 +10,16 @@ import (
 	"strings"
 	"testing"
 )
+
+type countingPreview struct{ calls int }
+
+func (p *countingPreview) Render(path string, _, _ int, _ ColorProfile) (string, error) {
+	p.calls++
+	if path == "bad" {
+		return "", fmt.Errorf("bad preview")
+	}
+	return "PREVIEW:" + path, nil
+}
 
 func TestMediaPreviewHalfBlocksPreserveAspectAndCacheBound(t *testing.T) {
 	dir := t.TempDir()
@@ -59,5 +70,39 @@ func TestMediaPreviewNoColorUsesMetadataCard(t *testing.T) {
 	}
 	if !strings.Contains(out, "MP4 / clip.mp4") || strings.Contains(out, "\x1b[") {
 		t.Fatalf("metadata fallback = %q", out)
+	}
+}
+
+func TestModelLoadsPreviewOffRenderPathAndDropsStaleResult(t *testing.T) {
+	isolateSettings(t)
+	renderer := &countingPreview{}
+	m := sized(t, newModel(stubExec, nil), 120, 30)
+	m.mediaPreview = renderer
+	m.running = true
+	m.showOutput = true
+	m.runID = 7
+	m.screenID = 3
+	cmd := m.startMediaPreview("clip.mp4")
+	if cmd == nil || !m.previewLoading || renderer.calls != 0 {
+		t.Fatalf("preview did not schedule asynchronously: loading=%v calls=%d", m.previewLoading, renderer.calls)
+	}
+	_ = m.View()
+	if renderer.calls != 0 {
+		t.Fatal("View performed synchronous media decoding")
+	}
+	msg := cmd()
+	if renderer.calls != 1 {
+		t.Fatalf("preview calls=%d", renderer.calls)
+	}
+	r, _ := m.Update(msg)
+	m = asModel(r)
+	if m.previewText != "PREVIEW:clip.mp4" || m.previewLoading {
+		t.Fatalf("preview result not applied: text=%q loading=%v", m.previewText, m.previewLoading)
+	}
+
+	m.previewText = "current"
+	r, _ = m.Update(mediaPreviewMsg{screenID: 2, runID: 7, path: "clip.mp4", text: "stale"})
+	if got := asModel(r).previewText; got != "current" {
+		t.Fatalf("stale preview replaced current result: %q", got)
 	}
 }

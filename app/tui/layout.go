@@ -148,6 +148,7 @@ func (m model) runButtons() []uiButton {
 	return m.buttons("run.details", "form.back")
 }
 func (m model) settingsButtons() []uiButton { return m.buttons("set.apply", "set.cancel") }
+func (m model) formButtons() []uiButton     { return m.buttons("form.run", "form.back") }
 func (m model) activateButton(id string) (tea.Model, tea.Cmd) {
 	if raw, ok := strings.CutPrefix(id, "picker.open:"); ok {
 		ix, err := strconv.Atoi(raw)
@@ -172,6 +173,8 @@ func (m model) activateButton(id string) (tea.Model, tea.Cmd) {
 		if !m.running {
 			m.toMenu()
 		}
+	case "form.run":
+		return m.launchForm()
 	case "set.apply":
 		m.applySettingsDraft()
 	case "set.cancel":
@@ -184,20 +187,67 @@ func (m model) activateButton(id string) (tea.Model, tea.Cmd) {
 		if m.picker != nil {
 			_ = m.picker.parent()
 		}
+	case "picker.refresh":
+		if m.picker != nil && m.picker.scanner == nil {
+			_ = m.picker.refresh()
+		}
+	case "picker.hidden":
+		if m.picker != nil && m.picker.scanner == nil {
+			m.picker.request.ShowHidden = !m.picker.request.ShowHidden
+			_ = m.picker.refresh()
+		}
+	case "picker.sort.name":
+		m.changePickerSort(sortName)
+	case "picker.sort.modified":
+		m.changePickerSort(sortModified)
+	case "picker.sort.size":
+		m.changePickerSort(sortSize)
+	case "picker.sort.type":
+		m.changePickerSort(sortType)
+	case "chat.confirm":
+		return m.closeChatSelector(true)
+	case "chat.more":
+		return m.loadMoreChats()
+	case "chat.manual", "chat.cancel":
+		return m.closeChatSelector(false)
+	case "retry.cancel":
+		m.retryPrompt = false
 	}
 	return m, nil
 }
 
+func (m *model) changePickerSort(column pickerSort) {
+	if m.picker == nil || m.picker.scanner != nil {
+		return
+	}
+	if m.picker.sortBy == column {
+		m.picker.desc = !m.picker.desc
+	} else {
+		m.picker.sortBy = column
+		m.picker.desc = false
+	}
+	m.picker.sortEntries()
+}
+
 func (m model) viewRetryConfirm() string {
 	width := m.contentWidth()
+	cardW, _, _, _ := m.retryConfirmGeometry()
 	rows := []string{
 		activeTheme.warning.Bold(true).Render(m.lang.t("retry.uncertain.title")),
 		stHint.Render(m.lang.t("retry.uncertain.body")),
 		"",
-		stFieldFocus.Render("[ y / enter ] "+m.lang.t("retry.anyway")) + "  " + stHint.Render("[ n / esc ] "+m.lang.t("picker.cancel")),
+		stFieldFocus.Render("[ "+m.lang.t("retry.anyway")+" ]") + "  " + stHint.Render("[ "+m.lang.t("picker.cancel")+" ]") + stHint.Render("  y/enter · n/esc"),
 	}
-	card := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colour(activeTheme.palette.Warning)).Padding(1, 2).Width(max(28, min(width-6, 70))).Render(strings.Join(rows, "\n"))
+	card := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colour(activeTheme.palette.Warning)).Padding(1).Width(max(1, cardW-4)).Render(strings.Join(rows, "\n"))
 	return lipgloss.Place(width, m.mainHeight(), lipgloss.Center, lipgloss.Center, card)
+}
+
+func (m model) retryConfirmGeometry() (cardW, cardH, x, y int) {
+	cardW = min(70, max(36, m.contentWidth()-8))
+	cardH = 8
+	x = m.sidebarWidth() + max(0, (m.contentWidth()-cardW)/2)
+	y = m.contentTop() + max(0, (m.mainHeight()-cardH)/2)
+	return
 }
 func (m model) resultLabel() string {
 	if m.running {

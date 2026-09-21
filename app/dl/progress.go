@@ -36,6 +36,9 @@ func (p *progress) OnDone(elem downloader.Elem, err error) { _ = p.Finalize(elem
 func (p *progress) Finalize(elem downloader.Elem, err error) error {
 	e := elem.(*iterElem)
 	phase := "transferring"
+	if e.skipTransfer {
+		phase = "finalizing_existing"
+	}
 	closeErr := e.to.Close()
 	if closeErr != nil {
 		err = errors.Join(err, xerrors.Wrap(closeErr, "close file"))

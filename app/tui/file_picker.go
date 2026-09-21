@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,6 +41,28 @@ type filePicker struct {
 	err           string
 	lastClickPath string
 	lastClickAt   time.Time
+	scanner       *selectionScanner
+	pendingPaths  []string
+}
+
+type selectionScanner struct {
+	id       uint64
+	cancel   context.CancelFunc
+	files    atomic.Int64
+	bytes    atomic.Int64
+	excluded atomic.Int64
+}
+
+type selectionScanMsg struct {
+	screenID uint64
+	scanID   uint64
+	plan     SelectionPlan
+	err      error
+}
+
+type selectionScanTickMsg struct {
+	screenID uint64
+	scanID   uint64
 }
 
 func newFilePicker(req PickerRequest) (*filePicker, error) {
@@ -249,38 +274,51 @@ func (p *filePicker) selectedPaths() []string {
 }
 
 func buildSelectionPlan(req PickerRequest, paths []string) SelectionPlan {
-	plan := SelectionPlan{Paths: append([]string(nil), paths...)}
-	seen := make(map[string]struct{})
-	for _, path := range paths {
-		appendSelection(req, path, &plan, seen)
-	}
-	sort.Slice(plan.Files, func(i, j int) bool { return naturalCompare(plan.Files[i].Path, plan.Files[j].Path) < 0 })
+	plan, _ := scanSelectionPlan(context.Background(), req, paths, nil)
 	return plan
 }
 
-func appendSelection(req PickerRequest, path string, plan *SelectionPlan, seen map[string]struct{}) {
+func scanSelectionPlan(ctx context.Context, req PickerRequest, paths []string, scanner *selectionScanner) (SelectionPlan, error) {
+	plan := SelectionPlan{Paths: append([]string(nil), paths...)}
+	seen := make(map[string]struct{})
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return plan, err
+		}
+		if err := appendSelection(ctx, req, path, &plan, seen, scanner); err != nil {
+			return plan, err
+		}
+	}
+	sort.Slice(plan.Files, func(i, j int) bool { return naturalCompare(plan.Files[i].Path, plan.Files[j].Path) < 0 })
+	return plan, nil
+}
+
+func appendSelection(ctx context.Context, req PickerRequest, path string, plan *SelectionPlan, seen map[string]struct{}, scanner *selectionScanner) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		plan.Problems = append(plan.Problems, PathProblem{Path: path, Err: err.Error()})
-		return
+		return nil
 	}
 	info, err := os.Lstat(abs)
 	if err != nil {
 		plan.Problems = append(plan.Problems, PathProblem{Path: abs, Err: err.Error()})
-		return
+		return nil
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		plan.Problems = append(plan.Problems, PathProblem{Path: abs, Err: "symbolic links and junctions are not followed"})
-		return
+		return nil
 	}
 	if !info.IsDir() {
-		appendFile(req, abs, info, plan, seen)
-		return
+		appendFile(req, abs, info, plan, seen, scanner)
+		return nil
 	}
 	if !req.Recursive {
-		return
+		return nil
 	}
 	err = filepath.WalkDir(abs, func(current string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			plan.Problems = append(plan.Problems, PathProblem{Path: current, Err: walkErr.Error()})
 			if entry != nil && entry.IsDir() {
@@ -305,22 +343,32 @@ func appendSelection(req PickerRequest, path string, plan *SelectionPlan, seen m
 		if !req.ShowHidden && isHiddenPath(current, entryInfo) {
 			if entry.IsDir() {
 				plan.ExcludedHidden++
+				if scanner != nil {
+					scanner.excluded.Add(1)
+				}
 				return fs.SkipDir
 			}
 			plan.ExcludedHidden++
+			if scanner != nil {
+				scanner.excluded.Add(1)
+			}
 			return nil
 		}
 		if !entry.IsDir() {
-			appendFile(req, current, entryInfo, plan, seen)
+			appendFile(req, current, entryInfo, plan, seen, scanner)
 		}
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
 		plan.Problems = append(plan.Problems, PathProblem{Path: abs, Err: err.Error()})
 	}
+	return nil
 }
 
-func appendFile(req PickerRequest, path string, info fs.FileInfo, plan *SelectionPlan, seen map[string]struct{}) {
+func appendFile(req PickerRequest, path string, info fs.FileInfo, plan *SelectionPlan, seen map[string]struct{}, scanner *selectionScanner) {
 	if len(req.AllowedExt) > 0 {
 		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
 		allowed := false
@@ -341,6 +389,10 @@ func appendFile(req PickerRequest, path string, info fs.FileInfo, plan *Selectio
 	seen[key] = struct{}{}
 	plan.Files = append(plan.Files, SelectedFile{Path: path, Size: info.Size(), ModUnix: info.ModTime().Unix()})
 	plan.TotalBytes += info.Size()
+	if scanner != nil {
+		scanner.files.Add(1)
+		scanner.bytes.Add(info.Size())
+	}
 }
 
 func canonicalPath(path string) string {
@@ -356,8 +408,27 @@ func canonicalPath(path string) string {
 }
 
 func (p *filePicker) summary() string {
-	plan := buildSelectionPlan(p.request, p.selectedPaths())
-	return fmt.Sprintf("%d · %s", len(plan.Files), formatBytes(plan.TotalBytes))
+	if p.scanner != nil {
+		return fmt.Sprintf("%d files · %s · %d excluded", p.scanner.files.Load(), formatBytes(p.scanner.bytes.Load()), p.scanner.excluded.Load())
+	}
+	count := 0
+	var bytes int64
+	hasDir := false
+	for _, entry := range p.entries {
+		if !p.selected[entry.Path] {
+			continue
+		}
+		count++
+		if entry.Dir {
+			hasDir = true
+		} else {
+			bytes += entry.Size
+		}
+	}
+	if hasDir {
+		return fmt.Sprintf("%d selected · %s · scan on confirm", count, formatBytes(bytes))
+	}
+	return fmt.Sprintf("%d files · %s", count, formatBytes(bytes))
 }
 
 func formatBytes(n int64) string {
