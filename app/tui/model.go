@@ -761,6 +761,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.toMenu()
 			case "r":
 				return m.retryFailed(false)
+			case "e":
+				m.openErrorList()
 			case "c":
 				if m.progress.Status == xprogress.StatusCanceled {
 					return m.retryFailed(false)

@@ -458,6 +458,9 @@ func percentLabel(pct float64, known bool) string {
 }
 
 func (m model) viewResult() string {
+	if chooseLayout(m.width, m.height) == layoutWide {
+		return m.viewResultWide()
+	}
 	mainW := m.contentWidth()
 	title := "✓ " + m.lang.t("run.complete")
 	style := activeTheme.success

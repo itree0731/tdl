@@ -340,6 +340,38 @@ func TestWideSidebarUsesPrimaryInformationArchitecture(t *testing.T) {
 	t.Fatal("chat export hub has no mouse region")
 }
 
+func TestWideResultCardsExposeStateSpecificActions(t *testing.T) {
+	isolateSettings(t)
+	base := sized(t, newModel(stubExec, nil), 120, 30)
+	base.showOutput = true
+	base.runLabel = "Upload"
+	base.runLast = 2 * time.Second
+	cases := []struct {
+		status progress.Status
+		want   []string
+	}{
+		{progress.StatusDone, []string{"Transfer complete", "All transfer items", "[enter] Back"}},
+		{progress.StatusPartial, []string{"Partially failed", "[e] Failures", "[r] Retry failed"}},
+		{progress.StatusCanceled, []string{"Canceled", "[c] Continue remaining", "Completed items are preserved"}},
+	}
+	for _, tc := range cases {
+		m := base
+		m.progress = progress.Snapshot{Status: tc.status, Succeeded: 2, Failed: 1, Canceled: 1, Final: true}
+		if tc.status != progress.StatusDone {
+			m.runResult = RunResult{Items: []ItemResult{{DisplayName: "clip.mp4", Phase: "transferring", Retry: RetryRestartItem}}}
+		}
+		out := renderPlain(m)
+		for _, want := range tc.want {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s result missing %q:\n%s", tc.status, want, out)
+			}
+		}
+		if strings.Contains(out, "████") || strings.Contains(out, "100%") {
+			t.Errorf("%s result retained live progress bar:\n%s", tc.status, out)
+		}
+	}
+}
+
 func progressFixture() progress.Snapshot {
 	return progress.Snapshot{
 		Discovered: 27, Expected: 27, Pending: 3, Running: 4, Succeeded: 20,

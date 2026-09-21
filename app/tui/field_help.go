@@ -112,6 +112,11 @@ var uiMessages = map[string][2]string{
 	"run.time":               {"Time", "时间"},
 	"run.level":              {"Level", "级别"},
 	"run.message":            {"Message", "消息"},
+	"result.success.desc":    {"All transfer items completed successfully.", "所有传输项目均已完成。"},
+	"result.failed.desc":     {"Some items need attention before the task is complete.", "部分项目仍需处理。"},
+	"result.canceled.desc":   {"Completed items are preserved; remaining items can continue.", "已完成项目已保留，可继续处理剩余项目。"},
+	"result.action":          {"Action", "任务"},
+	"result.elapsed":         {"Elapsed", "用时"},
 }
 
 var fieldHelp = map[string][2]string{

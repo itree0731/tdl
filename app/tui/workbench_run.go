@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -40,6 +41,49 @@ func (m model) viewRunWide() string {
 	}
 	details := m.viewRunDetails(width, detailH)
 	return fitScreen(lipgloss.JoinVertical(lipgloss.Left, top, "", details), width, height)
+}
+
+func (m model) viewResultWide() string {
+	width, height := m.contentWidth(), m.mainHeight()
+	title := "✓ " + m.lang.t("run.complete")
+	accent := activeTheme.success
+	border := colour(activeTheme.palette.Success)
+	action := "[enter] " + m.lang.t("form.back") + "  [d] " + m.lang.t("run.details")
+	subtitle := m.lang.t("result.success.desc")
+	switch m.progress.Status {
+	case xprogress.StatusCanceled:
+		title = "■ " + m.lang.t("status.canceled")
+		accent, border = activeTheme.warning, colour(activeTheme.palette.Warning)
+		action = "[c] " + m.lang.t("run.continue") + "  [d] " + m.lang.t("run.details") + "  [enter] " + m.lang.t("form.back")
+		subtitle = m.lang.t("result.canceled.desc")
+	case xprogress.StatusPartial, xprogress.StatusFailed:
+		title = "× " + m.resultLabel()
+		accent, border = activeTheme.failure, colour(activeTheme.palette.Error)
+		action = "[e] " + m.lang.t("run.failures") + "  [r] " + m.lang.t("run.retry") + "  [enter] " + m.lang.t("form.back")
+		subtitle = m.lang.t("result.failed.desc")
+	}
+	rows := []string{
+		accent.Bold(true).Render(title),
+		stHint.Render(subtitle),
+		stHint.Render(strings.Repeat("─", 54)),
+		stHint.Render(m.lang.t("result.action")+": ") + stSys.Render(m.runLabel),
+		stHint.Render(m.lang.t("result.elapsed")+": ") + stSys.Render(m.runLast.Truncate(time.Millisecond).String()),
+		m.progress.Summary(m.lang == LangZh),
+	}
+	if m.progress.TotalBytes > 0 {
+		rows = append(rows, stSys.Render(m.progress.Metrics()))
+	}
+	for i, item := range m.runResult.Items {
+		if i == 3 {
+			rows = append(rows, stHint.Render(fmt.Sprintf("+%d", len(m.runResult.Items)-i)))
+			break
+		}
+		rows = append(rows, stErr.Render("× "+item.DisplayName)+stHint.Render(" · "+item.Phase))
+	}
+	rows = append(rows, "", accent.Render(action))
+	cardW := min(82, max(54, width-12))
+	card := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(border).Padding(1, 2).Width(max(1, cardW-6)).Render(strings.Join(rows, "\n"))
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, card)
 }
 
 func workbenchPanel(width, height int, border lipgloss.TerminalColor, content string) string {
