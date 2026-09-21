@@ -1,10 +1,18 @@
 import {ArrowDownToLine, ArrowUpFromLine, Database, MessageSquare, RefreshCcw, Settings, Upload, CircleCheck, CircleX, Clock3, Square} from 'lucide-react';
+import {useEffect,useMemo,useState} from 'react';
 
 const nav = [
   [Upload,'上传'],[ArrowDownToLine,'下载'],[MessageSquare,'会话'],[ArrowUpFromLine,'任务'],[Database,'备份'],[RefreshCcw,'恢复'],[Settings,'设置']
 ] as const;
 
 export function App(){
+  const [paths,setPaths]=useState<string[]>([]),[namespaces,setNamespaces]=useState<string[]>([]),[namespace,setNamespace]=useState('default'),[running,setRunning]=useState(false),[error,setError]=useState('');
+  const [snap,setSnap]=useState<any>({Pending:0,Running:0,Succeeded:0,Failed:0,Canceled:0,CompletedBytes:0,TotalBytes:0,Speed:0,CurrentFile:'',DiscoveryDone:false});
+  useEffect(()=>{window.go?.main.App.Namespaces().then(x=>{setNamespaces(x);if(x.length)setNamespace(x.includes('default')?'default':x[0])}).catch(e=>setError(String(e))); const off1=window.runtime?.EventsOn('transfer:snapshot',setSnap); const off2=window.runtime?.EventsOn('transfer:done',(x:any)=>{setRunning(false);setError(x.error||'')}); return()=>{off1?.();off2?.()}},[]);
+  const pct=useMemo(()=>snap.DiscoveryDone&&snap.TotalBytes>0?Math.min(100,snap.CompletedBytes*100/snap.TotalBytes):0,[snap]);
+  const pickFiles=async()=>{const x=await window.go.main.App.SelectUploadFiles();if(x?.length)setPaths(x)};
+  const pickDir=async()=>{const x=await window.go.main.App.SelectUploadDirectory();if(x)setPaths([x])};
+  const start=async()=>{setError('');try{await window.go.main.App.StartUpload({namespace,paths,coverMode:'video-cover',coverAt:'auto',threads:4,limit:2});setRunning(true)}catch(e){setError(String(e))}};
   return <main className="shell">
     <aside className="sidebar">
       <section className="brand"><strong>TDL</strong><span>Telegram Media Transfer</span><em>传 输 工 作 台</em></section>
@@ -12,17 +20,18 @@ export function App(){
       <footer><div>登录 · 更新 · 版本 · 退出</div><b>让传输更简单</b><small>MEDIA ANYWHERE<br/>WITH TDL</small></footer>
     </aside>
     <section className="workspace">
-      <header className="session"><span>当前会话：<b>Workstation</b></span><i/><span>账号：<b>default</b></span><i/><span>网络：<mark>● 正常</mark></span><time>2026-09-21&nbsp; 12:30:16</time></header>
+      <header className="session"><span>当前会话：<b>Workstation</b></span><i/><span>账号：<select value={namespace} onChange={e=>setNamespace(e.target.value)}>{namespaces.map(x=><option key={x}>{x}</option>)}</select></span><i/><span>网络：<mark>● 正常</mark></span><time>{new Date().toLocaleString()}</time></header>
       <div className="overview">
         <article className="media card"><label>MEDIA</label><div className="cover"><span>VIDEO</span><small>720×1280 · 04:21 · H.264</small></div></article>
         <article className="task card">
           <h2><Upload/> 当前任务 <span>· 上传</span></h2><hr/>
-          <h1>Alps_4K_Documentary.mp4</h1><p>4.32 GB&nbsp;&nbsp; | &nbsp;&nbsp;3840×2160&nbsp;&nbsp; | &nbsp;&nbsp;MP4</p>
-          <div className="progress"><span/><b>68.4%</b></div>
-          <p>已上传&nbsp; <strong>2.96 GB / 4.32 GB</strong></p>
-          <div className="metrics"><span>◴ 速度&nbsp; <b>38.6 MB/s</b></span><span>◷ 剩余时间&nbsp; <b>00:00:36</b></span><button>详情</button><button className="danger"><Square size={13}/>停止</button></div>
+          <h1>{snap.CurrentFile||paths[0]?.split(/[\\/]/).pop()||'选择要上传的文件'}</h1><p>{paths.length?`已选择 ${paths.length} 项`:'支持文件和目录 · 默认高清 video_cover'}</p>
+          <div className="picker"><button onClick={pickFiles}>选择文件</button><button onClick={pickDir}>选择目录</button><button className="primary" disabled={!paths.length||running} onClick={start}>开始上传</button></div>
+          <div className="progress"><span style={{width:`${pct}%`}}/><b>{snap.DiscoveryDone?`${pct.toFixed(1)}%`:'--'}</b></div>
+          <p>已上传&nbsp; <strong>{bytes(snap.CompletedBytes)} / {snap.TotalBytes?bytes(snap.TotalBytes):'--'}</strong></p>
+          <div className="metrics"><span>◴ 速度&nbsp; <b>{bytes(snap.Speed)}/s</b></span><button>详情</button><button className="danger" disabled={!running} onClick={()=>window.go.main.App.StopTransfer()}><Square size={13}/>停止</button></div>{error&&<p className="error">{error}</p>}
         </article>
-        <article className="stats card"><h2>任务统计</h2><hr/><Stat icon={<Clock3/>} name="待处理" value="3"/><Stat icon={<ArrowUpFromLine/>} name="运行" value="1" blue/><Stat icon={<CircleCheck/>} name="成功" value="28" good/><Stat icon={<CircleX/>} name="失败" value="2" bad/></article>
+        <article className="stats card"><h2>任务统计</h2><hr/><Stat icon={<Clock3/>} name="待处理" value={String(snap.Pending||0)}/><Stat icon={<ArrowUpFromLine/>} name="运行" value={String(snap.Running||0)} blue/><Stat icon={<CircleCheck/>} name="成功" value={String(snap.Succeeded||0)} good/><Stat icon={<CircleX/>} name="失败" value={String(snap.Failed||0)} bad/></article>
       </div>
       <article className="logs card"><header><h2>▼ &nbsp;详情 <span>· 传输日志</span></h2><label>自动滚动&nbsp; <input type="checkbox" defaultChecked/></label></header><hr/>
         <div className="loghead"><span>时间</span><span>级别</span><span>消息</span></div>
@@ -32,4 +41,5 @@ export function App(){
     </section>
   </main>
 }
+function bytes(n:number=0){const u=['B','KiB','MiB','GiB'];let v=Number(n)||0,i=0;while(v>=1024&&i<u.length-1){v/=1024;i++}return `${v.toFixed(1)} ${u[i]}`}
 function Stat({icon,name,value,blue,good,bad}:{icon:React.ReactNode,name:string,value:string,blue?:boolean,good?:boolean,bad?:boolean}){return <div className={`stat ${blue?'blue':''} ${good?'good':''} ${bad?'bad':''}`}>{icon}<span>{name}</span><b>{value}</b></div>}
