@@ -23,9 +23,12 @@ type App struct {
 	cancel       context.CancelFunc
 	running      bool
 	chatLoading  bool
+	settingsBusy bool
 	dialogMu     sync.Mutex
 	chatCursorID int
 	chatCursors  map[string]map[int]*chat.DialogCursor
+	settings     DesktopSettings
+	settingsErr  error
 }
 type Capabilities struct {
 	Product       string `json:"product"`
@@ -36,6 +39,7 @@ type Capabilities struct {
 }
 type UploadRequest struct {
 	Namespace string   `json:"namespace"`
+	Proxy     string   `json:"proxy"`
 	Chat      string   `json:"chat"`
 	CoverMode string   `json:"coverMode"`
 	CoverAt   string   `json:"coverAt"`
@@ -49,6 +53,7 @@ type UploadRequest struct {
 
 type DownloadRequest struct {
 	Namespace string   `json:"namespace"`
+	Proxy     string   `json:"proxy"`
 	URLs      []string `json:"urls"`
 	Files     []string `json:"files"`
 	Directory string   `json:"directory"`
@@ -86,7 +91,8 @@ type ChatPage struct {
 }
 
 func NewApp() *App {
-	return &App{chatCursors: make(map[string]map[int]*chat.DialogCursor)}
+	settings, err := loadDesktopSettings(desktopSettingsPath())
+	return &App{chatCursors: make(map[string]map[int]*chat.DialogCursor), settings: settings, settingsErr: err}
 }
 func (a *App) startup(ctx context.Context) { a.ctx = ctx }
 func (a *App) Capabilities() Capabilities  { return Capabilities{"TDL Desktop", true, true, true, true} }
@@ -97,6 +103,39 @@ func (a *App) Namespaces() ([]string, error) {
 	}
 	defer store.Close()
 	return store.Namespaces()
+}
+
+func (a *App) GetSettings() (DesktopSettings, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.settingsErr != nil {
+		return a.settings, a.settingsErr
+	}
+	return a.settings, nil
+}
+
+func (a *App) SaveSettings(settings DesktopSettings) (DesktopSettings, error) {
+	a.mu.Lock()
+	if a.running || a.chatLoading || a.settingsBusy {
+		a.mu.Unlock()
+		return DesktopSettings{}, fmt.Errorf("当前有任务正在运行，不能保存设置")
+	}
+	a.settingsBusy = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.settingsBusy = false
+		a.mu.Unlock()
+	}()
+	settings.SchemaVersion = desktopSettingsVersion
+	if err := saveDesktopSettings(desktopSettingsPath(), settings); err != nil {
+		return DesktopSettings{}, err
+	}
+	a.mu.Lock()
+	a.settings = settings
+	a.settingsErr = nil
+	a.mu.Unlock()
+	return settings, nil
 }
 func (a *App) SelectUploadFiles() ([]string, error) {
 	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择上传文件"})
@@ -217,6 +256,10 @@ func (a *App) startTransfer(direction string, args []string) (StartResult, error
 		a.mu.Unlock()
 		return StartResult{}, fmt.Errorf("正在加载会话，请稍后开始传输")
 	}
+	if a.settingsBusy {
+		a.mu.Unlock()
+		return StartResult{}, fmt.Errorf("正在保存设置，请稍后开始传输")
+	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.cancel, a.running = cancel, true
 	a.mu.Unlock()
@@ -280,6 +323,9 @@ func buildDownloadArgs(req DownloadRequest) []string {
 	if req.Namespace != "" {
 		args = append(args, "--ns", req.Namespace)
 	}
+	if req.Proxy != "" {
+		args = append(args, "--proxy", req.Proxy)
+	}
 	if req.Threads > 0 {
 		args = append(args, "--threads", strconv.Itoa(req.Threads))
 	}
@@ -317,6 +363,9 @@ func buildUploadArgs(req UploadRequest) []string {
 	args := make([]string, 0, 24+len(req.Paths)*2)
 	if req.Namespace != "" {
 		args = append(args, "--ns", req.Namespace)
+	}
+	if req.Proxy != "" {
+		args = append(args, "--proxy", req.Proxy)
 	}
 	if req.Threads > 0 {
 		args = append(args, "--threads", strconv.Itoa(req.Threads))

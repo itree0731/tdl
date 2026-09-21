@@ -20,6 +20,7 @@ import {useEffect, useMemo, useState} from 'react';
 type TopicRef = {id: number; title: string};
 type ChatRef = {id: number; username: string; title: string; type: string; topics: TopicRef[]; self: boolean};
 type ChatPage = {items: ChatRef[]; next: number; skipped: number};
+type DesktopSettings = {schemaVersion: number; namespace: string; proxy: string; threads: number; limit: number; downloadDirectory: string; coverMode: string; coverAt: string; downloadGroup: boolean; downloadSkipSame: boolean; downloadRewrite: boolean};
 type TransferItem = {
   TaskID: string;
   FileName: string;
@@ -68,7 +69,8 @@ const emptySnapshot: Snapshot = {
 };
 
 const savedMessages: ChatRef = {id: 0, username: '', title: 'Saved Messages', type: 'self', topics: [], self: true};
-type WorkspacePage = 'upload' | 'download';
+const defaultSettings: DesktopSettings = {schemaVersion: 1, namespace: 'default', proxy: '', threads: 4, limit: 2, downloadDirectory: 'downloads', coverMode: 'video-cover', coverAt: 'auto', downloadGroup: true, downloadSkipSame: true, downloadRewrite: false};
+type WorkspacePage = 'upload' | 'download' | 'settings';
 const nav = [
   [Upload, '上传', 'upload'],
   [ArrowDownToLine, '下载', 'download'],
@@ -76,7 +78,7 @@ const nav = [
   [ArrowUpFromLine, '任务', ''],
   [Database, '备份', ''],
   [RefreshCcw, '恢复', ''],
-  [Settings, '设置', ''],
+  [Settings, '设置', 'settings'],
 ] as const;
 
 export function App() {
@@ -88,6 +90,9 @@ export function App() {
   const [downloadGroup, setDownloadGroup] = useState(true);
   const [downloadSkipSame, setDownloadSkipSame] = useState(true);
   const [downloadRewrite, setDownloadRewrite] = useState(false);
+  const [settings, setSettings] = useState<DesktopSettings>(defaultSettings);
+  const [settingsDraft, setSettingsDraft] = useState<DesktopSettings>(defaultSettings);
+  const [settingsStatus, setSettingsStatus] = useState('');
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [namespace, setNamespace] = useState('default');
   const [running, setRunning] = useState(false);
@@ -106,12 +111,24 @@ export function App() {
   const [draftTopic, setDraftTopic] = useState<TopicRef | null>(null);
 
   useEffect(() => {
-    window.go?.main.App.Namespaces()
-      .then((values) => {
-        setNamespaces(values);
+    Promise.allSettled([window.go?.main.App.Namespaces(), window.go?.main.App.GetSettings()]).then(([namespaceResult, settingsResult]) => {
+      const values = namespaceResult.status === 'fulfilled' ? namespaceResult.value : [];
+      setNamespaces(values);
+      if (namespaceResult.status === 'rejected') setError(errorText(namespaceResult.reason));
+      if (settingsResult.status === 'fulfilled') {
+        const loaded = settingsResult.value;
+        setSettings(loaded);
+        setSettingsDraft(loaded);
+        setDownloadDirectory(loaded.downloadDirectory);
+        setDownloadGroup(loaded.downloadGroup);
+        setDownloadSkipSame(loaded.downloadSkipSame);
+        setDownloadRewrite(loaded.downloadRewrite);
+        setNamespace(values.includes(loaded.namespace) ? loaded.namespace : values[0] || loaded.namespace);
+      } else {
+        setError(errorText(settingsResult.reason));
         if (values.length) setNamespace(values.includes('default') ? 'default' : values[0]);
-      })
-      .catch((reason) => setError(errorText(reason)));
+      }
+    });
     const offSnapshot = window.runtime?.EventsOn('transfer:snapshot', (value: Snapshot) => setSnap(value));
     const offItems = window.runtime?.EventsOn('transfer:items', (value: TransferItem[]) => setItems(value || []));
     const offDone = window.runtime?.EventsOn('transfer:done', (value: {error?: string}) => {
@@ -143,9 +160,15 @@ export function App() {
     return chatItems.filter((entry) => `${entry.title} ${entry.username} ${entry.type}`.toLocaleLowerCase().includes(query));
   }, [chatItems, chatQuery]);
   const downloadURLs = useMemo(() => downloadInput.split(/\s+/).map((value) => value.trim()).filter(Boolean), [downloadInput]);
+  const settingsDirty = JSON.stringify(settingsDraft) !== JSON.stringify(settings);
 
   function switchPage(page: WorkspacePage) {
     if (running || page === activePage) return;
+    if (activePage === 'settings' && settingsDirty && !window.confirm('设置尚未应用，确定放弃修改吗？')) return;
+    if (page === 'settings') {
+      setSettingsDraft(settings);
+      setSettingsStatus('');
+    }
     setActivePage(page);
     setError('');
     setSnap(emptySnapshot);
@@ -170,6 +193,11 @@ export function App() {
   async function pickDownloadFiles() {
     const value = await window.go.main.App.SelectDownloadExportFiles();
     if (value?.length) setDownloadFiles(value);
+  }
+
+  async function pickSettingsDownloadDirectory() {
+    const value = await window.go.main.App.SelectDownloadDirectory();
+    if (value) setSettingsDraft((current) => ({...current, downloadDirectory: value}));
   }
 
   async function loadChats(cursor = 0, reset = false) {
@@ -206,13 +234,14 @@ export function App() {
     try {
       await window.go.main.App.StartUpload({
         namespace,
+        proxy: settings.proxy,
         paths,
         chat: selectedChat.self ? '' : String(selectedChat.id),
         topic: selectedTopic?.id || 0,
-        coverMode: 'video-cover',
-        coverAt: 'auto',
-        threads: 4,
-        limit: 2,
+        coverMode: settings.coverMode,
+        coverAt: settings.coverAt,
+        threads: settings.threads,
+        limit: settings.limit,
       });
       setRunning(true);
     } catch (reason) {
@@ -227,11 +256,12 @@ export function App() {
     try {
       await window.go.main.App.StartDownload({
         namespace,
+        proxy: settings.proxy,
         urls: downloadURLs,
         files: downloadFiles,
         directory: downloadDirectory,
-        threads: 4,
-        limit: 2,
+        threads: settings.threads,
+        limit: settings.limit,
         group: downloadGroup,
         skipSame: downloadSkipSame,
         rewrite: downloadRewrite,
@@ -239,6 +269,23 @@ export function App() {
       setRunning(true);
     } catch (reason) {
       setError(errorText(reason));
+    }
+  }
+
+  async function saveSettings() {
+    setSettingsStatus('');
+    try {
+      const saved = await window.go.main.App.SaveSettings(settingsDraft);
+      setSettings(saved);
+      setSettingsDraft(saved);
+      setDownloadDirectory(saved.downloadDirectory);
+      setDownloadGroup(saved.downloadGroup);
+      setDownloadSkipSame(saved.downloadSkipSame);
+      setDownloadRewrite(saved.downloadRewrite);
+      if (namespaces.includes(saved.namespace)) setNamespace(saved.namespace);
+      setSettingsStatus('设置已保存并应用');
+    } catch (reason) {
+      setSettingsStatus(errorText(reason));
     }
   }
 
@@ -252,12 +299,26 @@ export function App() {
 
       <section className="workspace">
         <header className="session">
-          <span>工作区：<b>{activePage === 'upload' ? '上传' : '下载'}</b></span><i/>
-          <span>账号：<select disabled={running || chatLoading} value={namespace} onChange={(event) => setNamespace(event.target.value)}>{namespaces.map((value) => <option key={value}>{value}</option>)}</select></span><i/>
+          <span>工作区：<b>{activePage === 'upload' ? '上传' : activePage === 'download' ? '下载' : '设置'}</b></span><i/>
+          <span>账号：<select disabled={running || chatLoading || activePage === 'settings'} value={namespace} onChange={(event) => setNamespace(event.target.value)}>{namespaces.map((value) => <option key={value}>{value}</option>)}</select></span><i/>
           <span>状态：<mark>● {running ? '传输中' : '就绪'}</mark></span>
           <time>{new Date().toLocaleString()}</time>
         </header>
 
+        {activePage === 'settings' ? <article className="settings-page card">
+          <header><div><small>DESKTOP PREFERENCES</small><h1>全局设置</h1><p>这些值会应用到之后启动的上传和下载任务。保存失败时，当前生效值不会改变。</p></div><Settings size={34}/></header>
+          <div className="settings-grid">
+            <label><span>默认账号<small>新任务默认使用的 Telegram 命名空间</small></span><select value={settingsDraft.namespace} onChange={(event) => setSettingsDraft({...settingsDraft, namespace: event.target.value})}>{namespaces.map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label><span>代理地址<small>留空时直接连接，例如 socks5://127.0.0.1:1080</small></span><input value={settingsDraft.proxy} onChange={(event) => setSettingsDraft({...settingsDraft, proxy: event.target.value})} placeholder="protocol://host:port"/></label>
+            <label><span>单文件线程数<small>一个文件内部的并行传输线程，范围 1–64</small></span><input type="number" min="1" max="64" value={settingsDraft.threads} onChange={(event) => setSettingsDraft({...settingsDraft, threads: Number(event.target.value)})}/></label>
+            <label><span>并行任务数<small>同时处理的文件数量，范围 1–32</small></span><input type="number" min="1" max="32" value={settingsDraft.limit} onChange={(event) => setSettingsDraft({...settingsDraft, limit: Number(event.target.value)})}/></label>
+            <label><span>视频封面模式<small>video_cover 高清封面不会改变视频起播时间</small></span><select value={settingsDraft.coverMode} onChange={(event) => setSettingsDraft({...settingsDraft, coverMode: event.target.value})}><option value="video-cover">video_cover · 高清</option><option value="video-thumb">video_thumb · 快速</option><option value="none">不生成封面</option></select></label>
+            <label><span>封面取帧时间<small>auto 自动选择，也可输入 2s、00:00:05</small></span><input value={settingsDraft.coverAt} onChange={(event) => setSettingsDraft({...settingsDraft, coverAt: event.target.value})} placeholder="auto"/></label>
+            <label className="wide"><span>默认下载目录<small>下载页首次打开和应用设置后使用的目录</small></span><div className="path-setting"><input readOnly value={settingsDraft.downloadDirectory}/><button onClick={pickSettingsDownloadDirectory}><FolderOpen size={16}/>选择</button></div></label>
+            <label className="wide"><span>下载默认行为<small>每次仍可在下载页单独修改</small></span><div className="setting-checks"><label><input type="checkbox" checked={settingsDraft.downloadGroup} onChange={(event) => setSettingsDraft({...settingsDraft, downloadGroup: event.target.checked})}/> 自动下载媒体组</label><label><input type="checkbox" checked={settingsDraft.downloadSkipSame} onChange={(event) => setSettingsDraft({...settingsDraft, downloadSkipSame: event.target.checked})}/> 跳过同名同大小</label><label><input type="checkbox" checked={settingsDraft.downloadRewrite} onChange={(event) => setSettingsDraft({...settingsDraft, downloadRewrite: event.target.checked})}/> 修正扩展名</label></div></label>
+          </div>
+          <footer><span className={settingsStatus === '设置已保存并应用' ? 'settings-ok' : 'settings-error'}>{settingsStatus || (settingsDirty ? '有尚未应用的修改' : '设置已与磁盘同步')}</span><div><button disabled={!settingsDirty} onClick={() => {setSettingsDraft(settings); setSettingsStatus('已放弃未应用的修改')}}>取消修改</button><button className="apply" disabled={!settingsDirty} onClick={saveSettings}>应用设置</button></div></footer>
+        </article> : <>
         <div className="overview">
           <article className="media card">
             <label>{activePage === 'upload' ? 'UPLOAD TARGET' : 'DOWNLOAD SOURCE'}</label>
@@ -307,6 +368,7 @@ export function App() {
           </div>)}
           {(snap.Errors || []).map((message, index) => <div className="log log-error" key={`${message}-${index}`}><b>错误</b><time>—</time><span>{message}</span></div>)}
         </article>
+        </>}
 
         <footer className="status"><span>TDL Desktop · 本地 WebView2</span><span>{bytes(snap.Speed)}/s&nbsp;&nbsp; | &nbsp;&nbsp;任务 {snap.Succeeded + snap.Failed + snap.Canceled}/{Math.max(snap.Succeeded + snap.Failed + snap.Canceled + snap.Pending + snap.Running, items.length)}</span></footer>
       </section>
