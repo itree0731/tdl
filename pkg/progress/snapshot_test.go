@@ -31,6 +31,16 @@ func TestWeightedUnknownAndDiscovery(t *testing.T) {
 		t.Fatal("unknown bytes were discarded")
 	}
 }
+
+func TestCollectorItemsPreserveSourcePathAndTerminalState(t *testing.T) {
+	c := NewCollector()
+	c.Emit(Event{Kind: KindQueued, Status: StatusQueued, TaskID: "2", FileName: "clip.mp4", SourcePath: `C:\media\clip.mp4`, TotalBytes: 100})
+	c.Emit(Event{Kind: KindFinished, Status: StatusFailed, TaskID: "2", FileName: "clip.mp4", SourcePath: `C:\media\clip.mp4`, TotalBytes: 100, CompletedBytes: 10, Phase: "transferring", Err: "network"})
+	items := c.Items()
+	if len(items) != 1 || items[0].SourcePath != `C:\media\clip.mp4` || items[0].Status != StatusFailed {
+		t.Fatalf("items = %+v", items)
+	}
+}
 func TestSourceFailureCancelDuplicateAndOrdering(t *testing.T) {
 	c := NewCollector()
 	s := NewSource(WithSink(context.Background(), c), DirectionUpload)

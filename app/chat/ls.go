@@ -57,8 +57,6 @@ type ListOptions struct {
 }
 
 func List(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts ListOptions) error {
-	log := logctx.From(ctx)
-
 	// align output
 	runewidth.EastAsianWidth = false
 	runewidth.DefaultCondition.EastAsianWidth = false
@@ -74,67 +72,9 @@ func List(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Lis
 		fmt.Print(fg.Sprint(fields, true))
 		return nil
 	}
-	// compile filter
-	filter, err := expr.Compile(opts.Filter, expr.AsBool())
-	if err != nil {
-		return fmt.Errorf("failed to compile filter: %w", err)
-	}
-
-	// Manually iterate through dialogs to handle errors gracefully
-	// This allows us to skip problematic dialogs (deleted/inaccessible channels)
-	// rather than failing completely when ExtractPeer fails
-	dialogs, skipped := fetchDialogsWithErrorHandling(ctx, c.API())
-	if skipped > 0 {
-		log.Warn("skipped problematic dialogs during iteration",
-			zap.Int("skipped", skipped),
-			zap.Int("fetched", len(dialogs)))
-	}
-
-	blocked, err := tutil.GetBlockedDialogs(ctx, c.API())
+	result, _, err := ListDialogs(ctx, c, kvd, opts.Filter)
 	if err != nil {
 		return err
-	}
-
-	manager := peers.Options{Storage: storage.NewPeers(kvd)}.Build(c.API())
-	result := make([]*Dialog, 0, len(dialogs))
-	for _, d := range dialogs {
-		id := tutil.GetInputPeerID(d.Peer)
-
-		// we can update our access hash state if there is any new peer.
-		if err = applyPeers(ctx, manager, d.Entities, id); err != nil {
-			log.Warn("failed to apply peer updates", zap.Int64("id", id), zap.Error(err))
-		}
-
-		// filter blocked peers
-		if _, ok := blocked[id]; ok {
-			continue
-		}
-
-		var r *Dialog
-		switch t := d.Peer.(type) {
-		case *tg.InputPeerUser:
-			r = processUser(t.UserID, d.Entities)
-		case *tg.InputPeerChannel:
-			r = processChannel(ctx, c.API(), t.ChannelID, d.Entities)
-		case *tg.InputPeerChat:
-			r = processChat(t.ChatID, d.Entities)
-		}
-
-		// skip unsupported types
-		if r == nil {
-			continue
-		}
-
-		// filter
-		b, err := texpr.Run(filter, r)
-		if err != nil {
-			return fmt.Errorf("failed to run filter: %w", err)
-		}
-		if !b.(bool) {
-			continue
-		}
-
-		result = append(result, r)
 	}
 
 	switch opts.Output {
@@ -152,6 +92,55 @@ func List(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Lis
 	}
 
 	return nil
+}
+
+// ListDialogs returns structured chat data without formatting it for stdout.
+// CLI table/JSON output and the TUI selector are adapters over this result.
+func ListDialogs(ctx context.Context, c *telegram.Client, kvd storage.Storage, filterExpr string) ([]*Dialog, int, error) {
+	log := logctx.From(ctx)
+	filter, err := expr.Compile(filterExpr, expr.AsBool())
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to compile filter: %w", err)
+	}
+	dialogs, skipped := fetchDialogsWithErrorHandling(ctx, c.API())
+	if skipped > 0 {
+		log.Warn("skipped problematic dialogs during iteration", zap.Int("skipped", skipped), zap.Int("fetched", len(dialogs)))
+	}
+	blocked, err := tutil.GetBlockedDialogs(ctx, c.API())
+	if err != nil {
+		return nil, skipped, err
+	}
+	manager := peers.Options{Storage: storage.NewPeers(kvd)}.Build(c.API())
+	result := make([]*Dialog, 0, len(dialogs))
+	for _, d := range dialogs {
+		id := tutil.GetInputPeerID(d.Peer)
+		if err = applyPeers(ctx, manager, d.Entities, id); err != nil {
+			log.Warn("failed to apply peer updates", zap.Int64("id", id), zap.Error(err))
+		}
+		if _, ok := blocked[id]; ok {
+			continue
+		}
+		var item *Dialog
+		switch peer := d.Peer.(type) {
+		case *tg.InputPeerUser:
+			item = processUser(peer.UserID, d.Entities)
+		case *tg.InputPeerChannel:
+			item = processChannel(ctx, c.API(), peer.ChannelID, d.Entities)
+		case *tg.InputPeerChat:
+			item = processChat(peer.ChatID, d.Entities)
+		}
+		if item == nil {
+			continue
+		}
+		matched, runErr := texpr.Run(filter, item)
+		if runErr != nil {
+			return nil, skipped, fmt.Errorf("failed to run filter: %w", runErr)
+		}
+		if matched.(bool) {
+			result = append(result, item)
+		}
+	}
+	return result, skipped, nil
 }
 
 func printTable(result []*Dialog) {

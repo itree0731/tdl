@@ -105,11 +105,13 @@ func (u *Uploader) upload(ctx context.Context, elem Elem) error {
 	})
 
 	doc := message.UploadedDocument(f, caption).MIME(mime.String()).Filename(elem.File().Name())
+	var uploadedThumb tg.InputFileClass
 	if thumb, ok := elem.Thumb(); ok {
 		thumbFile, thumbErr := uploadThumbnail(ctx, u.opts.Client, thumb)
 		if thumbErr != nil {
 			return errors.Wrap(thumbErr, "upload thumbnail")
 		}
+		uploadedThumb = thumbFile
 		doc = doc.Thumb(thumbFile)
 	}
 
@@ -130,10 +132,24 @@ func (u *Uploader) upload(ctx context.Context, elem Elem) error {
 		}
 		if dur, w, h, err := mediautil.GetMP4Info(elem.File()); err == nil {
 			// #132. There may be some errors, but we can still upload the file
-			media = doc.Video().
+			video := doc.Video().
 				Duration(time.Duration(dur)*time.Second).
 				Resolution(w, h).
 				SupportsStreaming()
+			media = video
+			if coverElem, ok := elem.(CoverElem); ok {
+				if cover, exists := coverElem.Cover(); exists {
+					coverFile, coverErr := uploadThumbnail(ctx, u.opts.Client, cover)
+					if coverErr != nil {
+						return errors.Wrap(coverErr, "upload video cover")
+					}
+					coverPhoto, coverErr := uploadVideoCover(ctx, u.opts.Client, elem.To(), coverFile)
+					if coverErr != nil {
+						return errors.Wrap(coverErr, "prepare video cover")
+					}
+					media = message.Media(buildVideoDocument(f, uploadedThumb, coverPhoto, coverElem.CoverTimestamp(), mime.String(), elem.File().Name(), dur, w, h), caption)
+				}
+			}
 		}
 	case mediautil.IsAudio(mime.String()):
 		media = doc.Audio().Title(fsutil.GetNameWithoutExt(elem.File().Name()))
@@ -149,6 +165,33 @@ func (u *Uploader) upload(ctx context.Context, elem Elem) error {
 	}
 
 	return nil
+}
+
+func uploadVideoCover(ctx context.Context, client *tg.Client, peer tg.InputPeerClass, file tg.InputFileClass) (*tg.InputPhoto, error) {
+	media, err := message.NewSender(client).To(peer).UploadMedia(ctx, message.UploadedPhoto(file))
+	if err != nil {
+		return nil, err
+	}
+	photoMedia, ok := media.(*tg.MessageMediaPhoto)
+	if !ok {
+		return nil, errors.Errorf("unexpected uploaded cover media %T", media)
+	}
+	photo, ok := photoMedia.Photo.(*tg.Photo)
+	if !ok {
+		return nil, errors.Errorf("unexpected uploaded cover photo %T", photoMedia.Photo)
+	}
+	return &tg.InputPhoto{ID: photo.ID, AccessHash: photo.AccessHash, FileReference: photo.FileReference}, nil
+}
+
+func buildVideoDocument(file, thumb tg.InputFileClass, cover *tg.InputPhoto, timestamp int, mime, name string, duration, width, height int) *tg.InputMediaUploadedDocument {
+	doc := &tg.InputMediaUploadedDocument{
+		File: file, Thumb: thumb, MimeType: mime, VideoCover: cover, VideoTimestamp: timestamp,
+		Attributes: []tg.DocumentAttributeClass{
+			&tg.DocumentAttributeFilename{FileName: name},
+			&tg.DocumentAttributeVideo{Duration: float64(duration), W: width, H: height, SupportsStreaming: true},
+		},
+	}
+	return doc
 }
 
 // uploadThumbnail always supplies the known byte size. FromReader represents

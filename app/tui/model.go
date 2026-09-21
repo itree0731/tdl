@@ -2,22 +2,41 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	xprogress "github.com/iyear/tdl/pkg/progress"
 )
 
-type state int
+type screenKind uint8
 
 const (
-	stateMenu state = iota
-	stateForm
-	stateRun
+	screenMenu screenKind = iota
+	screenForm
+	screenFilePicker
+	screenChatPicker
+	screenConfirm
+	screenRun
+	screenResult
+	screenErrorList
+	screenSettings
+)
+
+type state = screenKind
+
+const (
+	stateMenu = screenMenu
+	stateForm = screenForm
+	stateRun  = screenRun
 )
 
 const maxScrollbackLines = 5000
@@ -50,6 +69,16 @@ type model struct {
 	runErr            error
 	runLabel          string
 	runCommand        string
+	currentRun        RunSpec
+	runResult         RunResult
+	picker            *filePicker
+	pickerField       int
+	chatSource        ChatSource
+	chatPicker        *chatPicker
+	chatField         int
+	retryPrompt       bool
+	colorProfile      ColorProfile
+	mediaPreview      MediaPreview
 	runStart          time.Time
 	runLast           time.Duration
 	progress          xprogress.Snapshot
@@ -66,9 +95,10 @@ type model struct {
 	scrollback []string
 
 	width, height int
+	screenID      uint64
 }
 
-func newModel(exec Executor, namespaces []string) model {
+func newModel(exec Executor, namespaces []string, options ...tuiOption) model {
 	set := loadSettings()
 	if len(namespaces) > 0 {
 		selected := false
@@ -86,26 +116,31 @@ func newModel(exec Executor, namespaces []string) model {
 	}
 
 	m := model{
-		ctx:        context.Background(),
-		exec:       exec,
-		lang:       Lang(set.Language),
-		set:        set,
-		namespaces: namespaces,
-		hasSession: len(namespaces) > 0,
-		actions:    newActions(),
-		vp:         viewport.New(0, 0),
-		follow:     true,
+		ctx:          context.Background(),
+		exec:         exec,
+		lang:         Lang(set.Language),
+		set:          set,
+		namespaces:   namespaces,
+		hasSession:   len(namespaces) > 0,
+		actions:      newActions(),
+		vp:           viewport.New(0, 0),
+		follow:       true,
+		colorProfile: detectColorProfile(),
+		mediaPreview: newLocalMediaPreview(32),
+	}
+	for _, option := range options {
+		option(&m)
 	}
 	return m
 }
 
 // Run starts the TUI program. exec is injected from package cmd;
 // namespaces are the logged-in namespaces shown in the header.
-func Run(ctx context.Context, exec Executor, namespaces []string) error {
+func Run(ctx context.Context, exec Executor, namespaces []string, options ...tuiOption) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	m := newModel(exec, namespaces)
+	m := newModel(exec, namespaces, options...)
 	m.ctx = ctx
 	p := tea.NewProgram(&m, tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	m.program = p
@@ -147,7 +182,13 @@ func (m *model) openSettings() {
 
 func (m *model) applySettingsDraft() bool {
 	f := m.form.fields
-	candidate := settings{Language: f[0].choices[f[0].choiceIx], NS: f[1].value(), Proxy: f[2].value(), Threads: f[3].value(), Limit: f[4].value()}
+	candidate := m.settingsBase
+	candidate.SchemaVersion = settingsSchemaVersion
+	candidate.Language = f[0].choices[f[0].choiceIx]
+	candidate.NS = f[1].value()
+	candidate.Proxy = f[2].value()
+	candidate.Threads = f[3].value()
+	candidate.Limit = f[4].value()
 	if err := validateSettings(candidate); err != nil {
 		m.settingsError = err.Error()
 		m.updateSettingsDirty()
@@ -271,12 +312,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.progress = m.progressCollector.Finish(msg.err)
 		}
+		m.runResult = buildRunResult(msg.items)
 		m.appendLine("")
 		m.appendLine(m.resultLabel() + " " + msg.elapsed.Truncate(time.Millisecond).String())
 		if msg.err != nil {
 			m.appendLine(msg.err.Error())
 		}
 
+		return m, nil
+
+	case chatPageMsg:
+		if m.chatPicker == nil || msg.screenID != m.screenID || msg.screenID != m.chatPicker.screenID {
+			return m, nil
+		}
+		m.chatPicker.apply(msg.page, msg.err, m.set.RecentChats[m.currentNS()])
 		return m, nil
 
 	case tea.MouseMsg:
@@ -306,38 +355,44 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.MouseButtonLeft:
-		// account chips on the header row: click to switch namespace
-		if !m.running && !m.isSetting && !m.settingsPrompt && int(msg.Y) == 0 {
-			for _, c := range m.nsChipLayout(m.width) {
-				if x := int(msg.X); x >= c.x0 && x < c.x1 {
-					return m.switchNS(c.ns)
+		if action, ok := HitTest(m.frame(), int(msg.X), int(msg.Y)); ok {
+			switch action.Kind {
+			case UIActionAccount:
+				if !m.running && !m.isSetting && !m.settingsPrompt {
+					return m.switchNS(action.ID)
 				}
-			}
-		}
-		switch m.state() {
-		case stateRun:
-			for _, button := range m.runButtons() {
-				if button.contains(int(msg.X), int(msg.Y)) {
-					return m.activateButton(button.id)
+			case UIActionMenu:
+				if action.Index >= 0 && action.Index < len(m.actions) {
+					if action.Index == m.menuIx && m.state() == stateMenu {
+						return m.openMenuItem(action.Index)
+					}
+					m.menuIx = action.Index
 				}
-			}
-		case stateForm:
-			if m.isSetting && !m.settingsPrompt {
-				for _, button := range m.settingsButtons() {
-					if button.contains(int(msg.X), int(msg.Y)) {
-						return m.activateButton(button.id)
+			case UIActionField:
+				if m.form != nil && action.Index >= 0 && action.Index < len(m.form.fields) {
+					m.settingsButton = -1
+					m.focusFormField(action.Index)
+				}
+			case UIActionButton:
+				return m.activateButton(action.ID)
+			case UIActionPicker:
+				if action.ID == "chat" && m.chatPicker != nil && action.Index >= 0 && action.Index < len(m.chatPicker.filtered) {
+					m.chatPicker.cursor = action.Index
+					return m, nil
+				}
+				if m.picker != nil && action.Index >= 0 && action.Index < len(m.picker.entries) {
+					m.picker.cursor = action.Index
+					now := time.Now()
+					entry := m.picker.entries[action.Index]
+					if entry.Dir && m.picker.lastClickPath == entry.Path && now.Sub(m.picker.lastClickAt) <= 400*time.Millisecond {
+						_ = m.picker.enterCurrent()
+						m.picker.lastClickPath = ""
+					} else {
+						m.picker.toggleCurrent()
+						m.picker.lastClickPath = entry.Path
+						m.picker.lastClickAt = now
 					}
 				}
-			}
-
-		case stateMenu:
-			firstY, firstIx, count := m.menuWindow()
-			ix := int(msg.Y) - firstY + firstIx
-			if ix >= firstIx && ix < firstIx+count {
-				if ix == m.menuIx {
-					return m.openMenuItem(ix)
-				}
-				m.menuIx = ix
 			}
 		}
 	}
@@ -398,6 +453,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.menuIx < len(m.actions)-1 {
 				m.menuIx++
 			}
+		case "left":
+			if m.menuIx > 0 {
+				m.menuIx--
+			}
+		case "right":
+			if m.menuIx < len(m.actions)-1 {
+				m.menuIx++
+			}
 		case "enter", " ":
 			return m.openMenuItem(m.menuIx)
 		case "esc", "q":
@@ -438,6 +501,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		f := &m.form.fields[m.formIx]
 		switch msg.String() {
+		case "p":
+			if f.picker != nil {
+				return m.openFilePicker(m.formIx)
+			}
+			if f.kind == kChat {
+				return m.openChatSelector(m.formIx)
+			}
+			if f.kind.editable() {
+				var cmd tea.Cmd
+				m.form.fields[m.formIx].ti, cmd = f.ti.Update(msg)
+				return m, cmd
+			}
 		case "up":
 			m.focusFormField(m.formIx - 1)
 		case "down", "tab":
@@ -463,7 +538,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "left", "right":
 			if f.kind == kChoice {
 				f.cycle(msg.String() == "right")
-			} else if f.kind == kText || f.kind == kExtra {
+			} else if f.kind.editable() {
 				var cmd tea.Cmd
 				m.form.fields[m.formIx].ti, cmd = f.ti.Update(msg)
 				return m, cmd
@@ -477,11 +552,94 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.toMenu()
 		default:
-			if f.kind == kText || f.kind == kExtra {
+			if f.kind.editable() {
 				var cmd tea.Cmd
 				m.form.fields[m.formIx].ti, cmd = f.ti.Update(msg)
 				return m, cmd
 			}
+		}
+
+	case screenFilePicker:
+		if m.picker == nil {
+			return m, nil
+		}
+		switch msg.String() {
+		case "up", "k":
+			m.picker.cursor = max(0, m.picker.cursor-1)
+		case "down", "j":
+			m.picker.cursor = min(max(0, len(m.picker.entries)-1), m.picker.cursor+1)
+		case "enter":
+			if len(m.picker.entries) > 0 && m.picker.entries[m.picker.cursor].Dir {
+				_ = m.picker.enterCurrent()
+			} else {
+				m.picker.toggleCurrent()
+			}
+		case " ":
+			m.picker.toggleCurrent()
+		case "backspace", "left", "h":
+			_ = m.picker.parent()
+		case "ctrl+h":
+			m.picker.request.ShowHidden = !m.picker.request.ShowHidden
+			_ = m.picker.refresh()
+		case "r":
+			_ = m.picker.refresh()
+		case "s":
+			m.picker.sortBy = (m.picker.sortBy + 1) % 4
+			m.picker.sortEntries()
+		case "c", "ctrl+enter":
+			return m.closeFilePicker(true)
+		case "esc", "q":
+			return m.closeFilePicker(false)
+		}
+
+	case screenChatPicker:
+		if m.chatPicker == nil {
+			return m, nil
+		}
+		p := m.chatPicker
+		switch msg.String() {
+		case "up":
+			p.cursor = max(0, p.cursor-1)
+		case "down":
+			p.cursor = min(max(0, len(p.filtered)-1), p.cursor+1)
+		case "left":
+			p.topic = max(-1, p.topic-1)
+		case "right":
+			if item, ok := p.current(); ok {
+				p.topic = min(len(item.Topics)-1, p.topic+1)
+			}
+		case "enter", "c":
+			return m.closeChatSelector(true)
+		case "l":
+			if p.next != nil && !p.loading {
+				p.loading = true
+				return m, loadChatPageCmd(m.ctx, m.chatSource, p.namespace, p.next, m.screenID)
+			}
+		case "r":
+			if !p.loading {
+				p.loading = true
+				return m, loadChatPageCmd(m.ctx, m.chatSource, p.namespace, p.next, m.screenID)
+			}
+		case "m":
+			return m.closeChatSelector(false)
+		case "esc", "q":
+			return m.closeChatSelector(false)
+		default:
+			before := p.search.Value()
+			var cmd tea.Cmd
+			p.search, cmd = p.search.Update(msg)
+			if p.search.Value() != before {
+				p.filter(p.search.Value())
+			}
+			return m, cmd
+		}
+
+	case screenConfirm:
+		switch msg.String() {
+		case "y", "enter":
+			return m.retryFailed(true)
+		case "n", "esc":
+			m.retryPrompt = false
 		}
 
 	case stateRun:
@@ -489,6 +647,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "enter", "esc":
 				m.toMenu()
+			case "r":
+				return m.retryFailed(false)
 			}
 		}
 		switch msg.String() {
@@ -530,12 +690,12 @@ func (m *model) focusFormField(ix int) {
 	ix %= len(m.form.fields)
 	// only text inputs hold a usable cursor; zero-value inputs panic on Focus
 	if m.formIx < len(m.form.fields) {
-		if k := m.form.fields[m.formIx].kind; k == kText || k == kExtra {
+		if k := m.form.fields[m.formIx].kind; k.editable() {
 			m.form.fields[m.formIx].ti.Blur()
 		}
 	}
 	m.formIx = ix
-	if k := m.form.fields[ix].kind; k == kText || k == kExtra {
+	if k := m.form.fields[ix].kind; k.editable() {
 		m.form.fields[ix].ti.Focus()
 		m.form.fields[ix].ti.CursorStart()
 	}
@@ -576,8 +736,161 @@ func (m model) launchForm() (tea.Model, tea.Cmd) {
 	return m.launchAction(m.form)
 }
 
+func (m model) openFilePicker(fieldIndex int) (tea.Model, tea.Cmd) {
+	if m.form == nil || fieldIndex < 0 || fieldIndex >= len(m.form.fields) {
+		return m, nil
+	}
+	f := &m.form.fields[fieldIndex]
+	if f.picker == nil {
+		return m, nil
+	}
+	req := *f.picker
+	if recent := m.set.RecentDirs[req.Purpose]; recent != "" {
+		req.InitialDir = recent
+	} else if value := strings.TrimSpace(f.ti.Value()); value != "" {
+		candidate := value
+		if req.Mode == PickSaveFile || req.Mode == PickOpenFile {
+			candidate = filepath.Dir(candidate)
+		}
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			req.InitialDir = candidate
+		}
+	}
+	picker, err := newFilePicker(req)
+	if err != nil {
+		m.settingsError = err.Error()
+		return m, nil
+	}
+	m.picker = picker
+	m.pickerField = fieldIndex
+	m.screenID++
+	return m, nil
+}
+
+func (m model) openChatSelector(fieldIndex int) (tea.Model, tea.Cmd) {
+	if m.form == nil || fieldIndex < 0 || fieldIndex >= len(m.form.fields) || m.form.fields[fieldIndex].kind != kChat {
+		return m, nil
+	}
+	m.screenID++
+	m.chatField = fieldIndex
+	m.chatPicker = newChatPicker(m.currentNS(), m.screenID)
+	return m, loadChatPageCmd(m.ctx, m.chatSource, m.currentNS(), nil, m.screenID)
+}
+
+func (m model) closeChatSelector(apply bool) (tea.Model, tea.Cmd) {
+	if m.chatPicker == nil || m.form == nil || m.chatField >= len(m.form.fields) {
+		m.chatPicker = nil
+		return m, nil
+	}
+	if apply {
+		item, ok := m.chatPicker.current()
+		if !ok {
+			m.chatPicker.err = m.lang.t("chat.empty")
+			return m, nil
+		}
+		value := ""
+		if !item.Self {
+			value = strconv.FormatInt(item.ID, 10)
+		}
+		m.form.fields[m.chatField].ti.SetValue(value)
+		for i := range m.form.fields {
+			if m.form.fields[i].labelKey == "Topic id" {
+				topic := ""
+				if m.chatPicker.topic >= 0 && m.chatPicker.topic < len(item.Topics) {
+					topic = strconv.Itoa(item.Topics[m.chatPicker.topic].ID)
+				}
+				m.form.fields[i].ti.SetValue(topic)
+			}
+		}
+		if m.set.RecentChats == nil {
+			m.set.RecentChats = make(map[string][]int64)
+		}
+		m.set.RecentChats[m.currentNS()] = updateRecentChats(m.set.RecentChats[m.currentNS()], item.ID)
+		if err := saveSettings(m.set); err != nil {
+			m.chatPicker.err = err.Error()
+			return m, nil
+		}
+	}
+	m.chatPicker = nil
+	m.screenID++
+	m.focusFormField(m.chatField)
+	return m, nil
+}
+
+func (m model) closeFilePicker(apply bool) (tea.Model, tea.Cmd) {
+	if m.picker == nil || m.form == nil || m.pickerField >= len(m.form.fields) {
+		m.picker = nil
+		return m, nil
+	}
+	if !apply {
+		m.picker = nil
+		m.screenID++
+		return m, nil
+	}
+	f := &m.form.fields[m.pickerField]
+	paths := m.picker.selectedPaths()
+	switch m.picker.request.Mode {
+	case PickSaveFile:
+		name := filepath.Base(strings.TrimSpace(f.ti.Value()))
+		if name == "." || name == "" {
+			name = filepath.Base(f.def)
+		}
+		if name == "." || name == "" {
+			name = "output"
+		}
+		paths = []string{filepath.Join(m.picker.cwd, name)}
+	case PickDirectory:
+		paths = []string{m.picker.cwd}
+	}
+	if len(paths) == 0 {
+		m.picker.err = m.lang.t("picker.empty")
+		return m, nil
+	}
+	plan := buildSelectionPlan(m.picker.request, paths)
+	if m.picker.request.Mode != PickSaveFile && len(plan.Problems) > 0 {
+		m.picker.err = plan.Problems[0].Path + ": " + plan.Problems[0].Err
+		return m, nil
+	}
+	if m.picker.request.Mode == PickFilesAndDirectories {
+		paths = paths[:0]
+		for _, selected := range plan.Files {
+			paths = append(paths, selected.Path)
+		}
+	}
+	f.paths = append([]string(nil), paths...)
+	if len(paths) == 1 {
+		f.ti.SetValue(paths[0])
+	} else {
+		f.ti.SetValue(fmt.Sprintf("%d items · %s", len(paths), formatBytes(plan.TotalBytes)))
+	}
+	if m.set.RecentDirs == nil {
+		m.set.RecentDirs = make(map[string]string)
+	}
+	m.set.RecentDirs[m.picker.request.Purpose] = m.picker.cwd
+	if err := saveSettings(m.set); err != nil {
+		m.picker.err = err.Error()
+		return m, nil
+	}
+	m.picker = nil
+	m.screenID++
+	m.focusFormField(m.pickerField)
+	return m, nil
+}
+
 func (m model) launchAction(a *action) (tea.Model, tea.Cmd) {
-	argv := a.argv(m.set.globalArgs())
+	spec := a.formSpec()
+	run, err := spec.build(a.formValues(), m.set)
+	if err != nil {
+		m.settingsError = err.Error()
+		return m, nil
+	}
+	run.Display = RunDisplay{Title: a.title(m.lang), Summary: a.desc(m.lang)}
+	return m.launchRunSpec(run)
+}
+
+func (m model) launchRunSpec(run RunSpec) (tea.Model, tea.Cmd) {
+	argv := append([]string(nil), run.Args...)
+	m.currentRun = run
 
 	m.vp = viewport.New(m.width, m.mainHeight())
 	m.vp.SetContent("")
@@ -587,7 +900,7 @@ func (m model) launchAction(a *action) (tea.Model, tea.Cmd) {
 	m.running = true
 	m.showOutput = true
 	m.runErr = nil
-	m.runLabel = a.title(m.lang)
+	m.runLabel = run.Display.Title
 	m.runCommand = "$ tdl " + quoteJoin(argv)
 	m.runStart = time.Now()
 	m.live = ""
@@ -600,6 +913,75 @@ func (m model) launchAction(a *action) (tea.Model, tea.Cmd) {
 	m.stopReq = false
 	m.cancelRun = startRun(m.ctx, m.program, m.exec, argv, m.runID)
 	return m, nil
+}
+
+func (m model) retryFailed(forceUncertain bool) (tea.Model, tea.Cmd) {
+	if len(m.runResult.Items) == 0 {
+		return m, nil
+	}
+	var paths []string
+	cleanupCount := 0
+	for _, item := range m.runResult.Items {
+		if item.Retry == RetryUncertain && !forceUncertain {
+			m.retryPrompt = true
+			return m, nil
+		}
+		if item.Retry == RetryCleanupOnly {
+			if item.SourcePath != "" {
+				if err := os.Remove(item.SourcePath); err != nil {
+					m.settingsError = err.Error()
+					return m, nil
+				}
+			}
+			cleanupCount++
+			continue
+		}
+		if item.SourcePath != "" {
+			paths = append(paths, item.SourcePath)
+		}
+	}
+	if len(paths) == 0 {
+		if cleanupCount == len(m.runResult.Items) {
+			m.runResult = RunResult{}
+			m.progress.Failed = max(0, m.progress.Failed-cleanupCount)
+			if m.progress.Failed == 0 {
+				m.progress.Status = xprogress.StatusDone
+			}
+			m.settingsError = ""
+			return m, nil
+		}
+		if m.currentRun.ActionID == "dl" {
+			m.retryPrompt = false
+			return m.launchRunSpec(m.currentRun)
+		}
+		m.settingsError = m.lang.t("retry.nopath")
+		return m, nil
+	}
+	run := m.currentRun
+	if run.ActionID == "up" {
+		run.Args = replaceRepeatedFlag(run.Args, "-p", paths)
+		run.Inputs = run.Inputs[:0]
+		for _, path := range paths {
+			run.Inputs = append(run.Inputs, InputRef{Path: path, Kind: "file"})
+		}
+	}
+	m.retryPrompt = false
+	return m.launchRunSpec(run)
+}
+
+func replaceRepeatedFlag(args []string, flag string, values []string) []string {
+	out := make([]string, 0, len(args)+len(values)*2)
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag && i+1 < len(args) {
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	for _, value := range values {
+		out = append(out, flag, value)
+	}
+	return out
 }
 
 func (m *model) applyProgress(event xprogress.Event) {
@@ -637,6 +1019,7 @@ func (m model) switchNS(ns string) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) toMenu() {
+	m.screenID++
 	m.runID++ // invalidate late messages from the completed/aborted run
 	m.form = nil
 	m.isSetting = false
@@ -657,11 +1040,24 @@ func (m *model) toMenu() {
 	m.runErr = nil
 	m.runLast = 0
 	m.cancelRun = nil
+	m.currentRun = RunSpec{}
+	m.runResult = RunResult{}
+	m.picker = nil
+	m.pickerField = 0
+	m.chatPicker = nil
+	m.chatField = 0
+	m.retryPrompt = false
 	m.vp.SetContent("")
 }
 
 func (m model) state() state {
 	switch {
+	case m.picker != nil:
+		return screenFilePicker
+	case m.chatPicker != nil:
+		return screenChatPicker
+	case m.retryPrompt:
+		return screenConfirm
 	case m.running || m.showOutput:
 		return stateRun
 	case m.form != nil:
@@ -704,21 +1100,49 @@ func (m model) atBottom() bool {
 
 func (m model) mainHeight() int {
 	h := m.height - 6 // header 1 + status 1 + prompt 3 + shortcuts 1
+	if m.sidebarWidth() == 0 {
+		h-- // compact navigation row
+	}
 	if h < 3 {
 		h = 3
 	}
 	return h
 }
 
-func (m model) View() string {
+func (m model) contentWidth() int {
+	return max(1, m.width-m.sidebarWidth())
+}
+
+func (m model) sidebarWidth() int {
+	switch chooseLayout(m.width, m.height) {
+	case layoutWide:
+		return min(26, max(0, m.width-40))
+	case layoutStandard:
+		return min(18, max(0, m.width-40))
+	default:
+		return 0
+	}
+}
+
+func (m model) contentTop() int {
+	top := 1 // session header
+	if m.sidebarWidth() == 0 {
+		top++ // compact navigation
+	}
+	return top
+}
+
+func (m model) View() string { return m.frame().Text }
+
+func (m model) frame() Frame {
 	if m.width == 0 {
-		return m.lang.t("status.loading")
+		return Frame{Text: m.lang.t("status.loading")}
 	}
 
 	var b []string
 
 	// header: one clickable chip per logged-in account
-	prefix := stBrand.Render("tdl") + "  " + stBanner.Render(m.lang.t("banner.title")) + "  "
+	prefix := stBrand.Render(brandName) + "  " + stBanner.Render(m.lang.t("banner.title")) + "  "
 	if chips := m.nsChipLayout(m.width); len(chips) > 0 {
 		parts := []string{prefix}
 		for _, c := range chips {
@@ -733,15 +1157,27 @@ func (m model) View() string {
 		b = append(b, prefix+stHint.Render("○ "+m.lang.t("hdr.nosession")))
 	}
 
-	// main area
+	var content string
 	switch m.state() {
 	case stateMenu:
-		b = append(b, m.viewMenu())
+		content = m.viewMenu()
 	case stateForm:
-		b = append(b, m.viewForm())
+		content = m.viewForm()
+	case screenFilePicker:
+		content = m.viewFilePicker()
+	case screenChatPicker:
+		content = m.viewChatPicker()
+	case screenConfirm:
+		content = m.viewRetryConfirm()
 	default:
-		b = append(b, m.viewRun())
+		content = m.viewRun()
 	}
+	if sw := m.sidebarWidth(); sw > 0 {
+		content = lipgloss.JoinHorizontal(lipgloss.Top, m.viewSidebar(sw), content)
+	} else {
+		content = lipgloss.JoinVertical(lipgloss.Left, m.viewCompactNav(), content)
+	}
+	b = append(b, content)
 
 	// status line (visible while running, grok-style)
 	b = append(b, m.viewStatus())
@@ -755,12 +1191,14 @@ func (m model) View() string {
 	for i := range b {
 		b[i] = fitScreen(b[i], m.width, 0)
 	}
-	return fitScreen(lipgloss.JoinVertical(lipgloss.Left, b...), m.width, m.height)
+	text := fitScreen(lipgloss.JoinVertical(lipgloss.Left, b...), m.width, m.height)
+	return Frame{Text: text, Regions: m.hitRegions()}
 }
 
-// menuShowsLogo reports whether the ASCII logo fits above the menu.
+// menuShowsLogo is retained for compatibility with callers from phase one.
+// The phase-two workbench deliberately uses a compact wordmark.
 func (m model) menuShowsLogo() bool {
-	return m.mainHeight() >= len(asciiLogo)+2+len(m.actions)+1
+	return false
 }
 
 // menuWindow computes where the menu items live on screen: the Y of the
@@ -768,10 +1206,7 @@ func (m model) menuShowsLogo() bool {
 // items are visible. It is a pure function of the model, so View and
 // mouse hit-testing always agree.
 func (m model) menuWindow() (firstY, firstIx, count int) {
-	firstY = 1 // header
-	if m.menuShowsLogo() {
-		firstY += len(asciiLogo) + 1 // logo + blank
-	}
+	firstY = 1  // header
 	firstY += 2 // title + blank
 
 	n := len(m.actions)
@@ -814,7 +1249,7 @@ func (m model) nsChipLayout(width int) []nsChip {
 	if len(m.namespaces) == 0 {
 		return nil
 	}
-	x := lipgloss.Width(stBrand.Render("tdl")) + 2 +
+	x := lipgloss.Width(stBrand.Render(brandName)) + 2 +
 		lipgloss.Width(stBanner.Render(m.lang.t("banner.title"))) + 2
 	cur := m.currentNS()
 	var out []nsChip
@@ -834,35 +1269,107 @@ func (m model) nsChipLayout(width int) []nsChip {
 }
 
 func (m model) viewMenu() string {
-	var body []string
-	if m.menuShowsLogo() {
-		for i, l := range asciiLogo {
-			body = append(body, logoStyles[i%len(logoStyles)].Render(l))
-		}
-		body = append(body, "")
+	a := m.actions[m.menuIx]
+	width := m.contentWidth()
+	account := m.currentNS()
+	if len(m.namespaces) == 0 {
+		account = m.lang.t("hdr.nosession")
 	}
-	body = append(body, stTitle.Render(m.lang.t("menu.title")), "")
+	card := []string{
+		stHint.Render(strings.ToUpper(m.lang.t("menu.title"))),
+		stTitle.Render(a.title(m.lang)),
+		stHint.Render(a.desc(m.lang)),
+		"",
+		stFieldLabel.Render(m.lang.t("home.account")) + "  " + stSys.Render(account),
+		stFieldLabel.Render(m.lang.t("home.concurrent")) + "  " + stSys.Render(defaultText(m.set.Limit, "2")),
+		"",
+		stFieldFocus.Render("[ "+m.lang.t("form.open")+" ]") + "  " + stHint.Render(m.lang.t("home.openhint")),
+	}
+	if a.id == "login" && m.hasSession {
+		card = append(card, stOK.Render("✓ "+strings.Join(m.namespaces, ", ")))
+	}
+	panel := activeTheme.panelRaised.Width(max(1, width-6)).Render(strings.Join(card, "\n"))
+	return lipgloss.NewStyle().Width(width).Height(m.mainHeight()).Padding(1, 2).Render(panel)
+}
 
-	_, firstIx, count := m.menuWindow()
-	for i := firstIx; i < firstIx+count; i++ {
-		a := m.actions[i]
-		desc := a.desc(m.lang)
-		if a.id == "login" && m.hasSession {
-			desc += "  " + stOK.Render("✓ "+strings.Join(m.namespaces, ", "))
-		}
-		var row string
-		if i == m.menuIx {
-			row = stItemSelected.Render("▶ "+a.title(m.lang)) + stItemDesc.Render(desc)
-		} else {
-			row = stItem.Render("  "+a.title(m.lang)) + stItemDesc.Render(desc)
-		}
-		body = append(body, row)
+func defaultText(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
 	}
-	content := lipgloss.JoinVertical(lipgloss.Left, body...)
-	return lipgloss.NewStyle().Height(m.mainHeight()).Render(content)
+	return v
+}
+
+func (m model) viewSidebar(width int) string {
+	rows := []string{
+		stBrand.Render(" TDL"),
+		stHint.Render(ansi.Truncate(" Telegram Media Transfer", max(1, width-1), "…")),
+		stHint.Render(strings.Repeat("─", max(1, width-1))),
+	}
+	for i, a := range m.actions {
+		label := "  " + a.title(m.lang)
+		if i == m.menuIx {
+			label = "▌ " + a.title(m.lang)
+			rows = append(rows, stItemSelected.Width(max(1, width-2)).Render(ansi.Truncate(label, max(1, width-2), "…")))
+		} else {
+			rows = append(rows, stItem.Width(max(1, width-2)).Render(ansi.Truncate(label, max(1, width-2), "…")))
+		}
+	}
+	return lipgloss.NewStyle().Width(width).Height(m.mainHeight()).Background(colour(activeTheme.palette.Sidebar)).Render(strings.Join(rows, "\n"))
+}
+
+func (m model) viewCompactNav() string {
+	a := m.actions[m.menuIx]
+	return activeTheme.status.Width(max(1, m.width)).Render(stBrand.Render("‹ ") + stFieldFocus.Render(a.title(m.lang)) + stHint.Render("  "+m.lang.t("sc.leftright")))
+}
+
+func (m model) hitRegions() []HitRegion {
+	regions := make([]HitRegion, 0, len(m.actions)+len(m.namespaces)+len(m.formFields()))
+	for _, c := range m.nsChipLayout(m.width) {
+		regions = append(regions, HitRegion{ID: "account:" + c.ns, Rect: Rect{X: c.x0, Y: 0, W: c.x1 - c.x0, H: 1}, Enabled: !m.running && !m.isSetting && !m.settingsPrompt, Action: UIAction{Kind: UIActionAccount, ID: c.ns}})
+	}
+	if sw := m.sidebarWidth(); sw > 0 {
+		for i := range m.actions {
+			regions = append(regions, HitRegion{ID: "menu:" + m.actions[i].id, Rect: Rect{X: 0, Y: 4 + i, W: sw, H: 1}, Enabled: m.state() == stateMenu, Action: UIAction{Kind: UIActionMenu, Index: i, ID: m.actions[i].id}})
+		}
+	}
+	if m.state() == stateForm && m.form != nil {
+		x := m.sidebarWidth()
+		first := max(0, m.formIx-max(1, m.mainHeight()-3)+1)
+		last := min(len(m.form.fields), first+max(1, m.mainHeight()-2))
+		for i := first; i < last; i++ {
+			y := m.contentTop() + 2 + i - first
+			regions = append(regions, HitRegion{ID: fmt.Sprintf("field:%d", i), Rect: Rect{X: x, Y: y, W: m.contentWidth(), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionField, Index: i}})
+			if m.form.fields[i].picker != nil {
+				regions = append(regions, HitRegion{ID: fmt.Sprintf("picker.open:%d", i), Rect: Rect{X: max(x, m.width-12), Y: y, W: min(12, m.contentWidth()), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("picker.open:%d", i)}})
+			}
+			if m.form.fields[i].kind == kChat {
+				regions = append(regions, HitRegion{ID: fmt.Sprintf("chat.open:%d", i), Rect: Rect{X: max(x, m.width-12), Y: y, W: min(12, m.contentWidth()), H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: fmt.Sprintf("chat.open:%d", i)}})
+			}
+		}
+	}
+	regions = append(regions, m.pickerRegions()...)
+	regions = append(regions, m.chatRegions()...)
+	var buttons []uiButton
+	if m.isSetting {
+		buttons = m.settingsButtons()
+	} else if m.state() == stateRun {
+		buttons = m.runButtons()
+	}
+	for _, b := range buttons {
+		regions = append(regions, HitRegion{ID: "button:" + b.id, Rect: Rect{X: b.x0, Y: b.y, W: b.x1 - b.x0, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: b.id}})
+	}
+	return regions
+}
+
+func (m model) formFields() []field {
+	if m.form == nil {
+		return nil
+	}
+	return m.form.fields
 }
 
 func (m model) viewForm() string {
+	width := m.contentWidth()
 	subtitle := "$ tdl " + quoteJoin(m.form.argv(m.set.globalArgs()))
 	if m.isSetting {
 		subtitle = m.lang.t("set.global")
@@ -895,20 +1402,36 @@ func (m model) viewForm() string {
 				}
 			}
 			value = strings.Join(chs, stShortcutSep.Render("/")) + "  " + stFieldFlag.Render(f.flag)
+		case kPicker, kChat:
+			display := strings.TrimSpace(f.ti.Value())
+			if len(f.paths) == 1 {
+				display = f.paths[0]
+			} else if len(f.paths) > 1 {
+				display = fmt.Sprintf("%d items", len(f.paths))
+			}
+			if display == "" {
+				display = localizedPlaceholder(m.lang, f.placeholder)
+			}
+			budget := max(8, width-lipgloss.Width(f.label(m.lang))-20)
+			button := m.lang.t("picker.select")
+			if f.kind == kChat {
+				button = m.lang.t("chat.select")
+			}
+			value = stFieldValue.Render(ansi.Truncate(display, budget, "…")) + "  " + stFieldFocus.Render("["+button+"]")
 		default:
 			input := f.ti
 			input.Placeholder = localizedPlaceholder(m.lang, f.placeholder)
-			input.Width = max(1, m.width-lipgloss.Width(f.label(m.lang))-lipgloss.Width(f.flag)-10)
+			input.Width = max(1, width-lipgloss.Width(f.label(m.lang))-lipgloss.Width(f.flag)-10)
 			value = stFieldValue.Render(input.View()) + "  " + stFieldFlag.Render(f.flag)
 		}
 		if i == m.formIx {
 			cursor = stFieldFocus.Render("▸ ")
 			label = stFieldFocus.Render(f.label(m.lang))
 		}
-		rows = append(rows, cursor+label+": "+value)
+		rows = append(rows, ansi.Truncate(cursor+label+": "+value, max(1, width-2), "…"))
 	}
 	body := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	return lipgloss.NewStyle().Height(m.mainHeight()).Render(body)
+	return lipgloss.NewStyle().Width(width).Height(m.mainHeight()).Padding(0, 1).Render(body)
 }
 
 func (m model) viewPrompt() string {
@@ -928,6 +1451,10 @@ func (m model) viewPrompt() string {
 			_ = argv
 			text = stHint.Render(m.currentFieldHelp())
 		}
+	case screenFilePicker:
+		text = stHint.Render(m.lang.t("picker.help"))
+	case screenChatPicker:
+		text = stHint.Render(m.lang.t("chat.help"))
 	case stateRun:
 		if m.running {
 			text = stHint.Render(m.lang.t("status.running") + " · ctrl+c " + m.lang.t("sc.ctrlc"))
@@ -960,6 +1487,10 @@ func (m model) viewShortcuts() string {
 			return sc("tab", m.lang.t("sc.updown"), "enter", m.lang.t("set.apply"), "esc", m.lang.t("form.back"))
 		}
 		return sc("↑↓/tab", m.lang.t("sc.updown"), "space", m.lang.t("sc.space"), "enter", m.lang.t("form.run"), "esc", m.lang.t("form.back"))
+	case screenFilePicker:
+		return sc("↑↓", m.lang.t("sc.updown"), "space", m.lang.t("picker.select"), "c", m.lang.t("picker.confirm"), "esc", m.lang.t("picker.cancel"))
+	case screenChatPicker:
+		return sc("↑↓", m.lang.t("sc.updown"), "type", m.lang.t("chat.search"), "c", m.lang.t("chat.confirm"), "esc", m.lang.t("picker.cancel"))
 	default:
 		return sc("↑↓", m.lang.t("sc.scroll"), "enter", m.lang.t("form.back"),
 			"d", m.lang.t("run.details"), "ctrl+c", m.lang.t("sc.ctrlc"), "ctrl+c ×2", m.lang.t("sc.quit"))

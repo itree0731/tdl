@@ -42,6 +42,7 @@ type runDoneMsg struct {
 	err      error
 	elapsed  time.Duration
 	snapshot *xprogress.Snapshot
+	items    []xprogress.Event
 }
 
 // startRun launches argv in the background and streams its output into the
@@ -132,7 +133,7 @@ func startRun(parent context.Context, p *tea.Program, exec Executor, argv []stri
 		close(updatesDone)
 		<-updatesExited
 		snapshot := collector.FinishContext(ctx, runErr)
-		send(runDoneMsg{runID: runID, err: runErr, elapsed: time.Since(start), snapshot: &snapshot})
+		send(runDoneMsg{runID: runID, err: runErr, elapsed: time.Since(start), snapshot: &snapshot, items: collector.Items()})
 	}()
 
 	return cancel

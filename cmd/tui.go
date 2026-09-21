@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -16,6 +17,7 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
+	"github.com/iyear/tdl/app/chat"
 	"github.com/iyear/tdl/app/tui"
 	"github.com/iyear/tdl/core/logctx"
 	"github.com/iyear/tdl/core/storage"
@@ -44,9 +46,73 @@ func NewTUI() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return tui.Run(cmd.Context(), execInTUI, namespaces)
+			source := &tuiChatSource{storage: stg, cache: make(map[string][]tui.ChatRef), skipped: make(map[string]int)}
+			return tui.Run(cmd.Context(), execInTUI, namespaces, tui.WithChatSource(source))
 		},
 	}
+}
+
+type tuiChatSource struct {
+	storage kv.Storage
+	mu      sync.Mutex
+	cache   map[string][]tui.ChatRef
+	skipped map[string]int
+}
+
+func (s *tuiChatSource) Page(ctx context.Context, namespace string, cursor *tui.ChatCursor, limit int) (tui.ChatPage, error) {
+	s.mu.Lock()
+	items, cached := s.cache[namespace]
+	skipped := s.skipped[namespace]
+	s.mu.Unlock()
+	if !cached {
+		kvd, err := s.storage.Open(namespace)
+		if err != nil {
+			return tui.ChatPage{}, errors.Wrap(err, "open chat namespace")
+		}
+		client, err := tclientpkg.New(ctx, tclientpkg.Options{
+			KV: kvd, Proxy: viper.GetString(consts.FlagProxy), NTP: viper.GetString(consts.FlagNTP), ReconnectTimeout: viper.GetDuration(consts.FlagReconnectTimeout),
+		}, false)
+		if err != nil {
+			return tui.ChatPage{}, errors.Wrap(err, "create chat selector client")
+		}
+		var dialogs []*chat.Dialog
+		err = client.Run(ctx, func(runCtx context.Context) error {
+			var listErr error
+			dialogs, skipped, listErr = chat.ListDialogs(runCtx, client, kvd, "true")
+			return listErr
+		})
+		if err != nil {
+			return tui.ChatPage{}, errors.Wrap(err, "load chats")
+		}
+		items = make([]tui.ChatRef, 0, len(dialogs))
+		for _, dialog := range dialogs {
+			topics := make([]tui.TopicRef, 0, len(dialog.Topics))
+			for _, topic := range dialog.Topics {
+				topics = append(topics, tui.TopicRef{ID: topic.ID, Title: topic.Title})
+			}
+			items = append(items, tui.ChatRef{ID: dialog.ID, Username: dialog.Username, Title: dialog.VisibleName, Type: dialog.Type, Topics: topics})
+		}
+		s.mu.Lock()
+		s.cache[namespace] = items
+		s.skipped[namespace] = skipped
+		s.mu.Unlock()
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	start := 0
+	if cursor != nil {
+		start = max(0, cursor.OffsetID)
+	}
+	if start > len(items) {
+		start = len(items)
+	}
+	end := min(len(items), start+limit)
+	page := tui.ChatPage{Items: append([]tui.ChatRef(nil), items[start:end]...), Skipped: skipped}
+	if end < len(items) {
+		page.Next = &tui.ChatCursor{OffsetID: end}
+	}
+	return page, nil
 }
 
 // validNamespaces checks every stored session before the TUI starts. Only

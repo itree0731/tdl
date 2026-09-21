@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
@@ -93,11 +94,11 @@ func TestRenderRunSnapshot(t *testing.T) {
 	out := renderPlain(m)
 	t.Log("\n" + out)
 
-	if !strings.Contains(out, "$ tdl dl -u https://t.me/a/1") {
-		t.Errorf("scrollback missing command echo:\n%s", out)
+	if !strings.Contains(out, "Transfer complete") {
+		t.Errorf("result card missing completion state:\n%s", out)
 	}
-	if !strings.Contains(out, "Done in") {
-		t.Errorf("scrollback missing completion banner:\n%s", out)
+	if strings.Contains(out, "CPU:") || strings.Contains(out, "100%") {
+		t.Errorf("completed result retained live telemetry:\n%s", out)
 	}
 }
 
@@ -133,50 +134,38 @@ func click(t *testing.T, m model, x, y int) model {
 	return mm.(model)
 }
 
-func TestMouseClickMenuNoLogo(t *testing.T) {
+func TestMouseClickSidebarMenu(t *testing.T) {
 	isolateSettings(t)
-	// 24 rows: no logo, first item at Y=3 (header, title, blank)
 	m := sized(t, newModel(stubExec, nil), 90, 24)
 	m.menuIx = 2 // keep the first click off the pre-selected item
 
-	m = click(t, m, 5, 3) // Login
+	m = click(t, m, 5, 4) // Login
 	if m.menuIx != 0 {
-		t.Errorf("click on row 3 selected %d, want 0 (Login)", m.menuIx)
+		t.Errorf("click on row 4 selected %d, want 0 (Login)", m.menuIx)
 	}
-	m = click(t, m, 5, 6) // Chat: List
+	m = click(t, m, 5, 7) // Chat: List
 	if m.menuIx != 3 {
-		t.Errorf("click on row 6 selected %d, want 3 (Chat: List)", m.menuIx)
+		t.Errorf("click on row 7 selected %d, want 3 (Chat: List)", m.menuIx)
 	}
 }
 
-func TestMouseClickMenuWithLogo(t *testing.T) {
+func TestWordmarkReplacesLegacyLogo(t *testing.T) {
 	isolateSettings(t)
-	// 40 rows: logo shown, first item pushed down to Y=10
 	m := sized(t, newModel(stubExec, nil), 90, 40)
-	if !m.menuShowsLogo() {
-		t.Fatal("logo should be shown at 40 rows")
+	if m.menuShowsLogo() {
+		t.Fatal("legacy logo must stay disabled")
 	}
-	m.menuIx = 2
-	m = click(t, m, 5, 10) // Login
-	if m.menuIx != 0 {
-		t.Errorf("click on row 10 selected %d, want 0 (Login)", m.menuIx)
-	}
-	m = click(t, m, 5, 13) // Chat: List
-	if m.menuIx != 3 {
-		t.Errorf("click on row 13 selected %d, want 3 (Chat: List)", m.menuIx)
+	out := renderPlain(m)
+	if !strings.Contains(out, "TDL") || strings.Contains(out, "████") {
+		t.Fatalf("compact wordmark missing or old logo remains:\n%s", out)
 	}
 }
 
-func TestLogoRendersAndDegrades(t *testing.T) {
+func TestLegacyGradientLogoIsGone(t *testing.T) {
 	isolateSettings(t)
 	m := sized(t, newModel(stubExec, nil), 90, 40)
-	if out := renderPlain(m); !strings.Contains(out, "████████╗") {
-		t.Error("logo missing at 40 rows")
-	}
-
-	m = sized(t, newModel(stubExec, nil), 90, 24)
-	if out := renderPlain(m); strings.Contains(out, "████████╗") {
-		t.Error("logo should be hidden at 24 rows")
+	if out := renderPlain(m); strings.Contains(out, "████████╗") || strings.Contains(out, "grok-build") {
+		t.Error("legacy visual identity still renders")
 	}
 }
 
@@ -190,6 +179,32 @@ func TestNamespacesChip(t *testing.T) {
 	// login desc gains a check hint
 	if !strings.Contains(out, "✓ default, work") {
 		t.Errorf("login ns hint missing:\n%s", out)
+	}
+}
+
+func TestResponsiveFramesStayInsideTerminal(t *testing.T) {
+	isolateSettings(t)
+	for _, size := range []struct{ w, h int }{{120, 30}, {80, 24}, {32, 12}} {
+		m := sized(t, newModel(stubExec, []string{"default"}), size.w, size.h)
+		assertFrameFits(t, m, size.w, size.h)
+		r, _ := m.openMenuItem(indexOfAction(m, "up"))
+		m = asModel(r)
+		m = sized(t, m, size.w, size.h)
+		assertFrameFits(t, m, size.w, size.h)
+	}
+}
+
+func assertFrameFits(t *testing.T, m model, width, height int) {
+	t.Helper()
+	out := renderPlain(m)
+	lines := strings.Split(out, "\n")
+	if len(lines) > height {
+		t.Fatalf("%dx%d frame has %d rows:\n%s", width, height, len(lines), out)
+	}
+	for i, line := range lines {
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("%dx%d row %d has width %d:\n%s", width, height, i, got, out)
+		}
 	}
 }
 

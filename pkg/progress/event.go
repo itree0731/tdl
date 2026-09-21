@@ -49,6 +49,7 @@ type Event struct {
 	TaskID     string
 	TasksTotal int
 	FileName   string
+	SourcePath string
 
 	CompletedBytes int64
 	TotalBytes     int64

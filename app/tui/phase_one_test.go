@@ -55,14 +55,14 @@ func TestSettingsFailureDoesNotCommitOrLoseDraft(t *testing.T) {
 	m.openSettings()
 	before := m.set
 	m.form.fields[3].ti.SetValue("0")
-	if m.applySettingsDraft() || m.set != before || m.settingsError == "" {
+	if m.applySettingsDraft() || !reflect.DeepEqual(m.set, before) || m.settingsError == "" {
 		t.Fatal("invalid settings committed")
 	}
 	m.form.fields[3].ti.SetValue("8")
 	broken := filepath.Join(t.TempDir(), "not-a-directory")
 	os.WriteFile(broken, []byte("x"), 0600)
 	consts.DataDir = broken
-	if m.applySettingsDraft() || m.set != before || !m.settingsDirty || m.settingsError == "" {
+	if m.applySettingsDraft() || !reflect.DeepEqual(m.set, before) || !m.settingsDirty || m.settingsError == "" {
 		t.Fatalf("state=%+v", m.set)
 	}
 }

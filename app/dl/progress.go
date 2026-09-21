@@ -25,7 +25,7 @@ func newProgress(ctx context.Context, it *iter, opts Options) *progress {
 }
 func (p *progress) OnQueued(elem downloader.Elem) {
 	e := elem.(*iterElem)
-	p.source.Queue(elem, strings.TrimSuffix(e.to.Name(), tempExt), elem.File().Size(), 0)
+	p.source.QueuePath(elem, strings.TrimSuffix(e.to.Name(), tempExt), e.to.Name(), elem.File().Size(), 0)
 }
 func (p *progress) OnAdd(elem downloader.Elem) { p.OnQueued(elem); p.source.Start(elem) }
 func (p *progress) OnDownload(elem downloader.Elem, state downloader.ProgressState) {

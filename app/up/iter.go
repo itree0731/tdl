@@ -21,6 +21,7 @@ import (
 type File struct {
 	File  string
 	Thumb string
+	Cover string
 }
 
 type dest struct {
@@ -37,6 +38,8 @@ type iter struct {
 	photo       bool
 	remove      bool
 	noAutoThumb bool
+	coverMode   CoverMode
+	coverAt     string
 	delay       time.Duration
 	manager     *peers.Manager
 
@@ -45,7 +48,7 @@ type iter struct {
 	file uploader.Elem
 }
 
-func newIter(files []*File, to, caption *vm.Program, chat string, topic int, photo, remove, noAutoThumb bool, delay time.Duration, manager *peers.Manager) *iter {
+func newIter(files []*File, to, caption *vm.Program, chat string, topic int, photo, remove, noAutoThumb bool, coverMode CoverMode, coverAt string, delay time.Duration, manager *peers.Manager) *iter {
 	return &iter{
 		files:       files,
 		to:          to,
@@ -55,6 +58,8 @@ func newIter(files []*File, to, caption *vm.Program, chat string, topic int, pho
 		photo:       photo,
 		remove:      remove,
 		noAutoThumb: noAutoThumb,
+		coverMode:   coverMode,
+		coverAt:     coverAt,
 		delay:       delay,
 		manager:     manager,
 
@@ -108,7 +113,8 @@ func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
 	}
 	var (
 		thumb          *uploaderFile
-		temporaryThumb string
+		cover          *uploaderFile
+		temporaryFiles []string
 		keepFiles      bool
 	)
 	defer func() {
@@ -119,8 +125,11 @@ func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
 		if thumb != nil {
 			_ = thumb.Close()
 		}
-		if temporaryThumb != "" {
-			_ = os.Remove(temporaryThumb)
+		if cover != nil {
+			_ = cover.Close()
+		}
+		for _, path := range temporaryFiles {
+			_ = os.Remove(path)
 		}
 	}()
 
@@ -136,7 +145,7 @@ func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
 		return nil, errors.Wrap(err, "resolve caption")
 	}
 
-	thumbPath, temporary, err := prepareThumbnail(ctx, cur.File, cur.Thumb, i.noAutoThumb)
+	prepared, err := prepareCovers(ctx, cur.File, cur.Thumb, cur.Cover, i.coverMode, i.coverAt)
 	if err != nil {
 		keepFiles = true
 		return &iterElem{
@@ -146,29 +155,53 @@ func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
 			thread:         thread,
 			asPhoto:        i.photo,
 			remove:         i.remove,
-			preparationErr: errors.Wrap(err, "prepare thumbnail"),
+			preparationErr: errors.Wrap(err, "prepare video cover"),
 		}, nil
 	}
-	if temporary {
-		temporaryThumb = thumbPath
-	}
-	thumb, err = i.resolveThumb(thumbPath)
+	temporaryFiles = append(temporaryFiles, prepared.Temporary...)
+	thumb, err = i.resolveThumb(prepared.Thumb)
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve thumbnail")
+	}
+	cover, err = i.resolveCover(prepared.Cover)
+	if err != nil {
+		return nil, errors.Wrap(err, "resolve video cover")
 	}
 
 	keepFiles = true
 	return &iterElem{
 		file:    file,
 		thumb:   thumb,
+		cover:   cover,
 		to:      to,
 		caption: caption,
 		thread:  thread,
 
 		asPhoto:        i.photo,
 		remove:         i.remove,
-		temporaryThumb: temporaryThumb,
+		temporaryFiles: temporaryFiles,
+		coverTimestamp: prepared.VideoTimestamp,
 	}, nil
+}
+
+func (i *iter) resolveCover(path string) (*uploaderFile, error) {
+	if path == "" {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if info.Size() <= 0 {
+		_ = f.Close()
+		return nil, errors.New("video cover is empty")
+	}
+	return &uploaderFile{File: f, size: info.Size()}, nil
 }
 
 func (i *iter) resolveFile(path string) (*uploaderFile, error) {

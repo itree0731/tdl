@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 	"time"
 )
@@ -18,6 +19,17 @@ type Snapshot struct {
 	Speed                                                                        float64
 	Status                                                                       Status
 	Errors                                                                       []string
+}
+
+func (c *Collector) Items() []Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	items := make([]Event, 0, len(c.items))
+	for _, event := range c.items {
+		items = append(items, event)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].TaskID < items[j].TaskID })
+	return items
 }
 
 func (s Snapshot) Percent() (float64, bool) {

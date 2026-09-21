@@ -34,3 +34,10 @@ type Elem interface {
 type PreparedElem interface {
 	PreparationError() error
 }
+
+// CoverElem optionally provides a high-resolution video cover. It remains
+// separate from Thumb because Telegram stores the two in different fields.
+type CoverElem interface {
+	Cover() (File, bool)
+	CoverTimestamp() int
+}

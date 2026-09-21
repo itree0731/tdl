@@ -28,6 +28,7 @@ var zhFieldLabels = map[string]string{
 	"Newest first": "最新优先", "Grouped media": "媒体分组", "Takeout session": "Takeout 会话", "Serve over HTTP": "通过 HTTP 提供服务",
 	"Paths (comma separated)": "路径（逗号分隔）", "Chat": "会话目标", "Topic id": "主题 ID", "To (router expr)": "目标（路由表达式）",
 	"Remove after upload": "上传后删除", "As photo": "作为图片发送", "Disable auto thumbnail": "禁用自动视频封面", "Output": "输出格式", "Filter expr": "过滤表达式",
+	"Cover mode": "视频封面模式", "Cover time": "封面时间点",
 	"Export type": "导出类型", "Input (comma separated)": "输入（逗号分隔）", "Output file": "输出文件", "With content": "包含内容",
 	"All messages": "全部消息", "Raw struct": "原始结构", "Chat domain": "会话域名", "From (comma separated)": "来源（逗号分隔）",
 	"To": "目标", "Edit expr": "编辑表达式", "Mode": "模式", "Silent": "静默发送", "Dry run": "演练模式",
@@ -39,6 +40,7 @@ var zhChoiceLabels = map[string]string{
 	"code": "验证码", "desktop": "桌面客户端", "json": "JSON", "csv": "CSV", "table": "表格",
 	"time": "时间", "id": "ID", "last": "最后一条", "copy": "复制", "forward": "转发",
 	"en": "英文", "zh": "中文",
+	"video-cover": "高清封面", "thumbnail": "普通缩略图", "off": "关闭",
 }
 
 var zhPlaceholders = map[string]string{
@@ -49,6 +51,7 @@ var zhPlaceholders = map[string]string{
 	"true": "true", "depends on type": "根据导出类型填写", "tdl-export.json": "tdl-export.json", "channel domain": "频道域名",
 	"links or export files": "链接或导出文件", "CHAT or router expr": "会话或路由表达式", "empty = no edit": "留空表示不编辑",
 	"<date>.backup.tdl": "<日期>.backup.tdl", "xxx.backup.tdl": "xxx.backup.tdl", "v0.20.4": "v0.20.4",
+	"auto or 12s": "自动或 12s",
 }
 
 func localizedFieldLabel(l Lang, raw string) string {
@@ -161,8 +164,8 @@ var en = dict{
 	"sc.scroll":    "scroll",
 
 	// misc
-	"banner.title":  "tdl — Telegram Downloader, but more than a downloader",
-	"banner.sub":    "TUI mode · grok-build style",
+	"banner.title":  "Telegram Media Transfer",
+	"banner.sub":    "Move media with less friction",
 	"hdr.nosession": "no session",
 }
 
@@ -243,8 +246,8 @@ var zh = dict{
 	"sc.quit":      "退出",
 	"sc.scroll":    "滚动",
 
-	"banner.title":  "tdl — Telegram 下载器，不止于下载器",
-	"banner.sub":    "TUI 模式 · grok-build 风格",
+	"banner.title":  "Telegram 媒体传输工作台",
+	"banner.sub":    "让传输更简单",
 	"hdr.nosession": "暂无会话",
 }
 
@@ -270,11 +273,25 @@ func (l Lang) t(key string) string {
 
 // settings persisted to <data>/tui.json
 type settings struct {
-	Language string `json:"language"`
-	NS       string `json:"ns,omitempty"`
-	Proxy    string `json:"proxy,omitempty"`
-	Threads  string `json:"threads,omitempty"`
-	Limit    string `json:"limit,omitempty"`
+	SchemaVersion int                `json:"schema_version"`
+	Language      string             `json:"language"`
+	NS            string             `json:"ns,omitempty"`
+	Proxy         string             `json:"proxy,omitempty"`
+	Threads       string             `json:"threads,omitempty"`
+	Limit         string             `json:"limit,omitempty"`
+	RecentDirs    map[string]string  `json:"recent_dirs,omitempty"`
+	RecentChats   map[string][]int64 `json:"recent_chats,omitempty"`
+}
+
+const settingsSchemaVersion = 2
+
+func defaultSettings() settings {
+	return settings{
+		SchemaVersion: settingsSchemaVersion,
+		Language:      string(LangEn),
+		RecentDirs:    make(map[string]string),
+		RecentChats:   make(map[string][]int64),
+	}
 }
 
 func settingsPath() string {
@@ -282,10 +299,19 @@ func settingsPath() string {
 }
 
 func loadSettings() settings {
-	s := settings{Language: string(LangEn)}
+	s := defaultSettings()
 	b, err := os.ReadFile(settingsPath())
 	if err == nil {
 		_ = json.Unmarshal(b, &s)
+	}
+	if s.SchemaVersion < settingsSchemaVersion {
+		s.SchemaVersion = settingsSchemaVersion
+	}
+	if s.RecentDirs == nil {
+		s.RecentDirs = make(map[string]string)
+	}
+	if s.RecentChats == nil {
+		s.RecentChats = make(map[string][]int64)
 	}
 	if s.Language != string(LangZh) && s.Language != string(LangEn) {
 		s.Language = string(LangEn)
@@ -312,6 +338,16 @@ func validateSettings(s settings) error {
 	return nil
 }
 func saveSettings(s settings) error {
+	s.SchemaVersion = settingsSchemaVersion
+	if s.RecentDirs == nil {
+		s.RecentDirs = make(map[string]string)
+	}
+	if s.RecentChats == nil {
+		s.RecentChats = make(map[string][]int64)
+	}
+	if err := os.MkdirAll(filepath.Dir(settingsPath()), 0700); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err

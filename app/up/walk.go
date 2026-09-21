@@ -25,6 +25,9 @@ func walk(paths, includes, excludes []string) ([]*File, error) {
 			if d.IsDir() {
 				return nil
 			}
+			if strings.HasSuffix(strings.ToLower(path), coverSidecarSuffix) {
+				return nil
+			}
 
 			// process include and exclude
 			ext := filepath.Ext(path)
@@ -41,6 +44,9 @@ func walk(paths, includes, excludes []string) ([]*File, error) {
 			t := strings.TrimSuffix(path, filepath.Ext(path)) + consts.UploadThumbExt
 			if fsutil.PathExists(t) {
 				f.Thumb = t
+			}
+			if c := coverSidecarPath(path); fsutil.PathExists(c) {
+				f.Cover = c
 			}
 
 			files = append(files, &f)

@@ -76,7 +76,7 @@ func TestUploadFinalizeRemovesGeneratedThumbnail(t *testing.T) {
 	e := &iterElem{
 		file:           &uploaderFile{File: media, size: 100},
 		thumb:          &uploaderFile{File: thumb},
-		temporaryThumb: thumbPath,
+		temporaryFiles: []string{thumbPath},
 	}
 	p := newProgress(context.Background(), 1)
 	if err := p.Finalize(e, nil); err != nil {

@@ -18,7 +18,11 @@ func newProgress(ctx context.Context, tasksTotal int) *progress {
 	return &progress{source: xprogress.NewSource(ctx, xprogress.DirectionUpload), tasksTotal: tasksTotal}
 }
 func (p *progress) OnQueued(elem uploader.Elem) {
-	p.source.Queue(elem, elem.File().Name(), elem.File().Size(), p.tasksTotal)
+	sourcePath := ""
+	if e, ok := elem.(*iterElem); ok && e.file != nil {
+		sourcePath = e.file.File.Name()
+	}
+	p.source.QueuePath(elem, elem.File().Name(), sourcePath, elem.File().Size(), p.tasksTotal)
 }
 func (p *progress) OnAdd(elem uploader.Elem) { p.OnQueued(elem); p.source.Start(elem) }
 func (p *progress) OnUpload(elem uploader.Elem, state uploader.ProgressState) {
@@ -51,8 +55,11 @@ func (p *progress) closeFile(e *iterElem) error {
 	if e.thumb != nil {
 		err = errors.Join(err, e.thumb.Close())
 	}
-	if e.temporaryThumb != "" {
-		err = errors.Join(err, os.Remove(e.temporaryThumb))
+	if e.cover != nil {
+		err = errors.Join(err, e.cover.Close())
+	}
+	for _, path := range e.temporaryFiles {
+		err = errors.Join(err, os.Remove(path))
 	}
 	if err != nil {
 		return fmt.Errorf("close upload file: %w", err)

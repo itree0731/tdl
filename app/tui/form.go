@@ -14,7 +14,11 @@ const (
 	kBool
 	kChoice
 	kExtra
+	kPicker
+	kChat
 )
+
+func (k kind) editable() bool { return k == kText || k == kExtra || k == kPicker || k == kChat }
 
 type field struct {
 	kind        kind
@@ -24,6 +28,8 @@ type field struct {
 	flag        string
 	def         string // text default: value == def means "use tdl's own default"
 	choices     []string
+	picker      *PickerRequest
+	paths       []string
 
 	ti       textinput.Model
 	boolVal  bool
@@ -68,9 +74,25 @@ func extraField() field {
 	return field{kind: kExtra, labelKey: "form.extra", helpKey: "form.extra", placeholder: ti.Placeholder, flag: "", ti: ti}
 }
 
+func pickerField(labelKey, flag, def, ph string, request PickerRequest) field {
+	f := textField(labelKey, flag, def, ph)
+	f.kind = kPicker
+	f.picker = &request
+	return f
+}
+
+func chatField(labelKey, flag, ph string) field {
+	f := textField(labelKey, flag, "", ph)
+	f.kind = kChat
+	return f
+}
+
 func (f *field) value() string {
 	switch f.kind {
-	case kExtra, kText:
+	case kExtra, kText, kPicker, kChat:
+		if len(f.paths) > 0 {
+			return strings.Join(f.paths, " · ")
+		}
 		return strings.TrimSpace(f.ti.Value())
 	case kChoice:
 		return f.choices[f.choiceIx]
@@ -99,6 +121,12 @@ func (f *field) args(dst []string) []string {
 			return append(dst, f.flag)
 		}
 	default:
+		if f.kind == kPicker && len(f.paths) > 0 {
+			for _, path := range f.paths {
+				dst = append(dst, f.flag, path)
+			}
+			return dst
+		}
 		if v := f.value(); v != "" && v != f.def {
 			return append(dst, f.flag, v)
 		}
@@ -120,12 +148,15 @@ func (a *action) desc(l Lang) string  { return l.t(a.descKey) }
 
 // argv assembles the full argument vector for the runner.
 func (a *action) argv(global []string) []string {
-	argv := append([]string{}, global...)
-	argv = append(argv, a.base...)
-	for i := range a.fields {
-		argv = a.fields[i].args(argv)
+	spec := a.formSpec()
+	cfg := settings{}
+	// Global flags have already been normalised by the caller. Build the
+	// command through the typed spec, then prepend those exact flags.
+	run, err := spec.build(a.formValues(), cfg)
+	if err != nil {
+		return append(append([]string{}, global...), a.base...)
 	}
-	return argv
+	return append(append([]string{}, global...), run.Args...)
 }
 
 func newActions() []action {
@@ -144,8 +175,8 @@ func newActions() []action {
 			base: []string{"dl"},
 			fields: []field{
 				textField("Message URLs (comma separated)", "-u", "", "https://t.me/..."),
-				textField("Export files (comma separated)", "-f", "", "result.json"),
-				textField("Output dir", "-d", "downloads", "downloads"),
+				pickerField("Export files (comma separated)", "-f", "", "result.json", PickerRequest{Purpose: "download_exports", Mode: PickFiles, Multi: true, AllowedExt: []string{"json"}}),
+				pickerField("Output dir", "-d", "downloads", "downloads", PickerRequest{Purpose: "download_output", Mode: PickDirectory}),
 				textField("Include ext", "-i", "", "mp4,mp3"),
 				textField("Exclude ext", "-e", "", "png,jpg"),
 				boolField("Rewrite ext", "--rewrite-ext"),
@@ -161,15 +192,16 @@ func newActions() []action {
 			id: "up", titleKey: "menu.up", descKey: "menu.up.desc",
 			base: []string{"up"},
 			fields: []field{
-				textField("Paths (comma separated)", "-p", "", "dirs or files"),
-				textField("Chat", "-c", "", "empty = Saved Messages"),
+				pickerField("Paths (comma separated)", "-p", "", "dirs or files", PickerRequest{Purpose: "upload_paths", Mode: PickFilesAndDirectories, Multi: true, Recursive: true}),
+				chatField("Chat", "-c", "empty = Saved Messages"),
 				textField("Topic id", "--topic", "", "0"),
 				textField("To (router expr)", "--to", "", "CHAT expr"),
 				textField("Include ext", "-i", "", "mp4,mp3"),
 				textField("Exclude ext", "-e", "", "png,jpg"),
 				boolField("Remove after upload", "--rm"),
 				boolField("As photo", "--photo"),
-				boolField("Disable auto thumbnail", "--no-auto-thumb"),
+				choiceField("Cover mode", "--cover-mode", []string{"video-cover", "thumbnail", "off"}),
+				textField("Cover time", "--cover-at", "auto", "auto or 12s"),
 				extraField(),
 			},
 		},
@@ -186,10 +218,10 @@ func newActions() []action {
 			base: []string{"chat", "export"},
 			fields: []field{
 				choiceField("Export type", "-T", []string{"", "time", "id", "last"}),
-				textField("Chat", "-c", "", "empty = Saved Messages"),
+				chatField("Chat", "-c", "empty = Saved Messages"),
 				textField("Input (comma separated)", "-i", "", "depends on type"),
 				textField("Filter expr", "-f", "", "true"),
-				textField("Output file", "-o", "tdl-export.json", "tdl-export.json"),
+				pickerField("Output file", "-o", "tdl-export.json", "tdl-export.json", PickerRequest{Purpose: "chat_export", Mode: PickSaveFile, AllowedExt: []string{"json"}}),
 				boolField("With content", "--with-content"),
 				boolField("All messages", "--all"),
 				boolField("Raw struct", "--raw"),
@@ -200,8 +232,8 @@ func newActions() []action {
 			id: "chatusers", titleKey: "menu.chatusers", descKey: "menu.chatusers.desc",
 			base: []string{"chat", "users"},
 			fields: []field{
-				textField("Chat domain", "-c", "", "channel domain"),
-				textField("Output file", "-o", "tdl-users.json", "tdl-users.json"),
+				chatField("Chat domain", "-c", "channel domain"),
+				pickerField("Output file", "-o", "tdl-users.json", "tdl-users.json", PickerRequest{Purpose: "chat_users", Mode: PickSaveFile, AllowedExt: []string{"json"}}),
 				boolField("Raw struct", "--raw"),
 			},
 		},
@@ -209,7 +241,7 @@ func newActions() []action {
 			id: "forward", titleKey: "menu.forward", descKey: "menu.forward.desc",
 			base: []string{"forward"},
 			fields: []field{
-				textField("From (comma separated)", "--from", "", "links or export files"),
+				pickerField("From (comma separated)", "--from", "", "links or export files", PickerRequest{Purpose: "forward_sources", Mode: PickFiles, Multi: true, AllowedExt: []string{"json"}}),
 				textField("To", "--to", "", "CHAT or router expr"),
 				textField("Edit expr", "--edit", "", "empty = no edit"),
 				choiceField("Mode", "--mode", []string{"", "copy", "forward"}),
@@ -224,14 +256,14 @@ func newActions() []action {
 			id: "backup", titleKey: "menu.backup", descKey: "menu.backup.desc",
 			base: []string{"backup"},
 			fields: []field{
-				textField("Destination", "-d", "", "<date>.backup.tdl"),
+				pickerField("Destination", "-d", "", "<date>.backup.tdl", PickerRequest{Purpose: "backup_destination", Mode: PickSaveFile, AllowedExt: []string{"tdl"}}),
 			},
 		},
 		{
 			id: "recover", titleKey: "menu.recover", descKey: "menu.recover.desc",
 			base: []string{"recover"},
 			fields: []field{
-				textField("Backup file", "-f", "", "xxx.backup.tdl"),
+				pickerField("Backup file", "-f", "", "xxx.backup.tdl", PickerRequest{Purpose: "recover_source", Mode: PickOpenFile, AllowedExt: []string{"tdl"}}),
 			},
 		},
 		{

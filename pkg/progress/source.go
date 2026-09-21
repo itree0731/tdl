@@ -20,13 +20,16 @@ func NewSource(ctx context.Context, d Direction) *Source {
 	return &Source{ctx: ctx, direction: d, items: make(map[any]Event)}
 }
 func (s *Source) Queue(key any, name string, size int64, expected int) {
+	s.QueuePath(key, name, "", size, expected)
+}
+func (s *Source) QueuePath(key any, name, sourcePath string, size int64, expected int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.items[key]; ok {
 		return
 	}
 	s.next++
-	e := Event{Kind: KindQueued, Status: StatusQueued, TaskID: strconv.FormatUint(s.next, 10), Direction: s.direction, FileName: name, TotalBytes: size, TasksTotal: expected}
+	e := Event{Kind: KindQueued, Status: StatusQueued, TaskID: strconv.FormatUint(s.next, 10), Direction: s.direction, FileName: name, SourcePath: sourcePath, TotalBytes: size, TasksTotal: expected}
 	s.send(key, e)
 }
 func (s *Source) send(key any, e Event) {

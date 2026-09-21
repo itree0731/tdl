@@ -40,6 +40,8 @@ type Options struct {
 	Remove      bool
 	Photo       bool
 	NoAutoThumb bool
+	CoverMode   string
+	CoverAt     string
 	Caption     string
 }
 
@@ -70,6 +72,10 @@ func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Opti
 	if err != nil {
 		return err
 	}
+	coverMode, err := parseCoverMode(opts.CoverMode, opts.NoAutoThumb)
+	if err != nil {
+		return err
+	}
 
 	color.Blue("Files count: %d", len(files))
 
@@ -95,7 +101,7 @@ func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Opti
 	options := uploader.Options{
 		Client:   pool.Default(ctx),
 		Threads:  viper.GetInt(consts.FlagThreads),
-		Iter:     newIter(files, to, caption, opts.Chat, opts.Thread, opts.Photo, opts.Remove, opts.NoAutoThumb, viper.GetDuration(consts.FlagDelay), manager),
+		Iter:     newIter(files, to, caption, opts.Chat, opts.Thread, opts.Photo, opts.Remove, opts.NoAutoThumb, coverMode, opts.CoverAt, viper.GetDuration(consts.FlagDelay), manager),
 		Progress: newProgress(ctx, len(files)),
 	}
 

@@ -14,13 +14,15 @@ import (
 type iterElem struct {
 	file    *uploaderFile
 	thumb   *uploaderFile
+	cover   *uploaderFile
 	to      peers.Peer
 	caption *entity.Builder
 	thread  int
 
 	asPhoto        bool
 	remove         bool
-	temporaryThumb string
+	temporaryFiles []string
+	coverTimestamp int
 	preparationErr error
 }
 
@@ -34,6 +36,15 @@ func (e *iterElem) Thumb() (uploader.File, bool) {
 	}
 	return e.thumb, true
 }
+
+func (e *iterElem) Cover() (uploader.File, bool) {
+	if e.cover == nil {
+		return nil, false
+	}
+	return e.cover, true
+}
+
+func (e *iterElem) CoverTimestamp() int { return e.coverTimestamp }
 
 func (e *iterElem) Caption() (string, []tg.MessageEntityClass) {
 	return e.caption.Complete()
