@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -142,5 +143,19 @@ func TestCleanupOnlyRetryDeletesWithoutLaunchingUpload(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("cleanup did not delete source: %v", err)
+	}
+}
+
+func TestCommandFailureBeforeDiscoveryProducesFailureItem(t *testing.T) {
+	isolateSettings(t)
+	m := newModel(stubExec, nil)
+	m.running, m.showOutput, m.runID, m.runLabel = true, true, 4, "Upload"
+	r, _ := m.Update(runDoneMsg{runID: 4, err: errors.New("invalid source path")})
+	m = asModel(r)
+	if m.progress.Status != xprogress.StatusFailed || m.progress.Failed != 1 || len(m.runResult.Items) != 1 {
+		t.Fatalf("status=%s failed=%d items=%+v", m.progress.Status, m.progress.Failed, m.runResult.Items)
+	}
+	if m.runResult.Items[0].Phase != "command" || m.runResult.Items[0].Retry != RetryNotAllowed {
+		t.Fatalf("synthetic failure=%+v", m.runResult.Items[0])
 	}
 }

@@ -336,6 +336,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.progress = m.progressCollector.Finish(msg.err)
 		}
 		m.runResult = buildRunResult(msg.items)
+		if msg.err != nil && len(m.runResult.Items) == 0 {
+			status := xprogress.StatusFailed
+			retry := RetryNotAllowed
+			if errors.Is(msg.err, context.Canceled) {
+				status = xprogress.StatusCanceled
+				retry = RetryRestartItem
+				m.progress.Canceled = max(1, m.progress.Canceled)
+			} else {
+				m.progress.Failed = max(1, m.progress.Failed)
+			}
+			m.runResult.Items = []ItemResult{{DisplayName: m.runLabel, Phase: "command", Err: msg.err.Error(), Status: string(status), Retry: retry}}
+		}
 		m.appendLine("")
 		m.appendLine(m.resultLabel() + " " + msg.elapsed.Truncate(time.Millisecond).String())
 		if msg.err != nil {
