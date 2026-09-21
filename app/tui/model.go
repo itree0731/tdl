@@ -419,15 +419,22 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 			case UIActionMenu:
 				if action.Index >= 0 && action.Index < len(m.actions) {
-					if action.Index == m.menuIx && m.state() == stateMenu {
+					m.menuIx = action.Index
+					if m.state() == stateMenu {
 						return m.openMenuItem(action.Index)
 					}
-					m.menuIx = action.Index
 				}
 			case UIActionField:
 				if m.form != nil && action.Index >= 0 && action.Index < len(m.form.fields) {
 					m.settingsButton = -1
 					m.focusFormField(action.Index)
+					field := &m.form.fields[action.Index]
+					switch field.kind {
+					case kBool:
+						field.boolVal = !field.boolVal
+					case kChoice:
+						field.cycle(true)
+					}
 				}
 			case UIActionButton:
 				return m.activateButton(action.ID)
@@ -1578,7 +1585,7 @@ func (m model) hitRegions() []HitRegion {
 		accountY = 1
 	}
 	for _, c := range m.nsChipLayout(m.width) {
-		regions = append(regions, HitRegion{ID: "account:" + c.ns, Rect: Rect{X: c.x0, Y: accountY, W: c.x1 - c.x0, H: 1}, Enabled: !m.running && !m.isSetting && !m.settingsPrompt, Action: UIAction{Kind: UIActionAccount, ID: c.ns}})
+		regions = append(regions, HitRegion{ID: "account:" + c.ns, Rect: Rect{X: c.x0, Y: accountY, W: c.x1 - c.x0, H: 1}, Enabled: m.state() == stateMenu && !m.settingsPrompt, Action: UIAction{Kind: UIActionAccount, ID: c.ns}})
 	}
 	if sw := m.sidebarWidth(); sw > 0 {
 		menuTop := 4

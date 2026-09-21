@@ -139,15 +139,32 @@ func click(t *testing.T, m model, x, y int) model {
 func TestMouseClickSidebarMenu(t *testing.T) {
 	isolateSettings(t)
 	m := sized(t, newModel(stubExec, nil), 90, 24)
-	m.menuIx = 2 // keep the first click off the pre-selected item
-
-	m = click(t, m, 5, 4) // Login
-	if m.menuIx != 0 {
-		t.Errorf("click on row 4 selected %d, want 0 (Login)", m.menuIx)
+	m = click(t, m, 5, 5) // Download
+	if m.menuIx != 1 || m.state() != stateForm || m.form == nil || m.form.id != "dl" {
+		t.Fatalf("single sidebar click did not open Download: index=%d state=%v form=%v", m.menuIx, m.state(), m.form)
 	}
-	m = click(t, m, 5, 7) // Chat: List
-	if m.menuIx != 3 {
-		t.Errorf("click on row 7 selected %d, want 3 (Chat: List)", m.menuIx)
+}
+
+func TestMouseClickTogglesFormControlsAndFreezesAccount(t *testing.T) {
+	isolateSettings(t)
+	m := sized(t, newModel(stubExec, []string{"default", "work"}), 120, 30)
+	r, _ := m.openMenuItem(indexOfAction(m, "up"))
+	m = asModel(r)
+	boolIndex := 6 // Remove after upload.
+	first := max(0, m.formIx-max(1, m.mainHeight()-3)+1)
+	y := m.contentTop() + 2 + boolIndex - first
+	m = click(t, m, m.sidebarWidth()+2, y)
+	if !m.form.fields[boolIndex].boolVal {
+		t.Fatal("mouse click did not toggle boolean field")
+	}
+	chips := m.nsChipLayout(m.width)
+	if len(chips) < 2 {
+		t.Fatal("missing account chips")
+	}
+	accountY := 1
+	m = click(t, m, chips[1].x0, accountY)
+	if m.currentNS() != "default" {
+		t.Fatal("account changed while a form was open")
 	}
 }
 
