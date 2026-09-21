@@ -116,6 +116,29 @@ func (m model) buttons(ids ...string) []uiButton {
 	return out
 }
 func (m model) runButtons() []uiButton {
+	if chooseLayout(m.width, m.height) == layoutWide && m.running {
+		topH := min(18, max(12, m.mainHeight()*38/100))
+		if m.mainHeight() < 24 {
+			topH = min(12, m.mainHeight())
+		}
+		previewW := min(32, max(24, m.contentWidth()/5))
+		statsW := min(28, max(24, m.contentWidth()/6))
+		taskW := max(36, m.contentWidth()-previewW-statsW-4)
+		if previewW+taskW+statsW+4 > m.contentWidth() {
+			previewW = 0
+		}
+		x := m.sidebarWidth() + previewW
+		if previewW > 0 {
+			x += 2
+		}
+		y := m.contentTop() + topH - 2
+		details := "[d] " + m.lang.t("run.details")
+		stop := "[ctrl+c] " + m.lang.t("run.stop")
+		return []uiButton{
+			{id: "run.details", label: details, x0: x + 2, x1: x + 2 + lipgloss.Width(details), y: y},
+			{id: "run.stop", label: stop, x0: x + 4 + lipgloss.Width(details), x1: x + 4 + lipgloss.Width(details) + lipgloss.Width(stop), y: y},
+		}
+	}
 	if m.running {
 		return m.buttons("run.details", "run.stop")
 	}
@@ -249,6 +272,9 @@ func (m model) runSummaryRows() []string {
 func (m model) viewRun() string {
 	if !m.running {
 		return m.viewResult()
+	}
+	if chooseLayout(m.width, m.height) == layoutWide {
+		return m.viewRunWide()
 	}
 
 	mainW := m.contentWidth()

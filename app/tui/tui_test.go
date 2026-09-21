@@ -396,7 +396,11 @@ func TestAccountChipSwitch(t *testing.T) {
 
 	// click the second chip: switch, apply to argv, persist
 	x := (chips[1].x0 + chips[1].x1) / 2
-	r, _ := m2.Update(tea.MouseMsg{X: x, Y: 0, Button: tea.MouseButtonLeft})
+	accountY := 0
+	if chooseLayout(m2.width, m2.height) == layoutWide {
+		accountY = 1
+	}
+	r, _ := m2.Update(tea.MouseMsg{X: x, Y: accountY, Button: tea.MouseButtonLeft})
 	m3 := asModel(r)
 	if m3.currentNS() != "work" {
 		t.Fatalf("after click currentNS = %q", m3.currentNS())
@@ -409,7 +413,7 @@ func TestAccountChipSwitch(t *testing.T) {
 	}
 
 	// clicking the chip of an account again keeps it
-	r2, _ := m3.Update(tea.MouseMsg{X: x, Y: 0, Button: tea.MouseButtonLeft})
+	r2, _ := m3.Update(tea.MouseMsg{X: x, Y: accountY, Button: tea.MouseButtonLeft})
 	m4 := asModel(r2)
 	if m4.currentNS() != "work" {
 		t.Fatalf("re-click changed NS to %q", m4.currentNS())
@@ -417,7 +421,7 @@ func TestAccountChipSwitch(t *testing.T) {
 
 	// while running, chips must not switch accounts mid-run
 	m4.running = true
-	r3, _ := m4.Update(tea.MouseMsg{X: chips[0].x0, Y: 0, Button: tea.MouseButtonLeft})
+	r3, _ := m4.Update(tea.MouseMsg{X: chips[0].x0, Y: accountY, Button: tea.MouseButtonLeft})
 	if asModel(r3).currentNS() != "work" {
 		t.Fatal("switched namespace while running")
 	}

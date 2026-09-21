@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"container/list"
 	"fmt"
 	"image"
@@ -9,6 +10,7 @@ import (
 	_ "image/png"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -57,13 +59,37 @@ func (p *localMediaPreview) Render(path string, widthCells, heightCells int, pro
 	img, _, err := image.Decode(f)
 	_ = f.Close()
 	if err != nil {
-		value := mediaInfoCard(path, info.Size())
-		p.put(key, value)
-		return value, nil
+		img, err = decodeVideoFrame(path, widthCells, heightCells)
+		if err != nil {
+			value := mediaInfoCard(path, info.Size())
+			p.put(key, value)
+			return value, nil
+		}
 	}
 	value := renderHalfBlocks(img, widthCells, heightCells, profile)
 	p.put(key, value)
 	return value, nil
+}
+
+func decodeVideoFrame(path string, widthCells, heightCells int) (image.Image, error) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return nil, err
+	}
+	maxW := max(2, widthCells)
+	maxH := max(2, heightCells*2)
+	cmd := exec.Command(ffmpeg,
+		"-hide_banner", "-loglevel", "error", "-ss", "1", "-i", path,
+		"-map", "0:v:0", "-frames:v", "1",
+		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease:flags=lanczos", maxW, maxH),
+		"-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+	)
+	data, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	return img, err
 }
 
 func (p *localMediaPreview) get(key string) (string, bool) {

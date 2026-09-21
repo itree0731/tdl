@@ -92,7 +92,10 @@ type model struct {
 	vp     viewport.Model
 	follow bool
 
-	scrollback []string
+	scrollback     []string
+	scrollTimes    []time.Time
+	lastLoggedFile string
+	lastLoggedPct  int
 
 	width, height int
 	screenID      uint64
@@ -116,17 +119,18 @@ func newModel(exec Executor, namespaces []string, options ...tuiOption) model {
 	}
 
 	m := model{
-		ctx:          context.Background(),
-		exec:         exec,
-		lang:         Lang(set.Language),
-		set:          set,
-		namespaces:   namespaces,
-		hasSession:   len(namespaces) > 0,
-		actions:      newActions(),
-		vp:           viewport.New(0, 0),
-		follow:       true,
-		colorProfile: detectColorProfile(),
-		mediaPreview: newLocalMediaPreview(32),
+		ctx:           context.Background(),
+		exec:          exec,
+		lang:          Lang(set.Language),
+		set:           set,
+		namespaces:    namespaces,
+		hasSession:    len(namespaces) > 0,
+		actions:       newActions(),
+		vp:            viewport.New(0, 0),
+		follow:        true,
+		colorProfile:  detectColorProfile(),
+		mediaPreview:  newLocalMediaPreview(32),
+		lastLoggedPct: -1,
 	}
 	for _, option := range options {
 		option(&m)
@@ -271,6 +275,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case progressSnapshotMsg:
 		if msg.runID == m.runID && m.running {
 			m.progress = msg.snapshot
+			m.appendProgressLog()
 			m.renderViewport()
 		}
 		return m, nil
@@ -905,11 +910,13 @@ func (m model) launchRunSpec(run RunSpec) (tea.Model, tea.Cmd) {
 	m.runStart = time.Now()
 	m.live = ""
 	m.stopReq = false
+	m.lastLoggedFile = ""
+	m.lastLoggedPct = -1
 
 	m.runID++
 	m.progressCollector = xprogress.NewCollector()
 	m.progress = m.progressCollector.Snapshot()
-	m.detailsOpen = false
+	m.detailsOpen = chooseLayout(m.width, m.height) == layoutWide
 	m.stopReq = false
 	m.cancelRun = startRun(m.ctx, m.program, m.exec, argv, m.runID)
 	return m, nil
@@ -1026,6 +1033,9 @@ func (m *model) toMenu() {
 	m.showOutput = false
 	m.live = ""
 	m.scrollback = nil
+	m.scrollTimes = nil
+	m.lastLoggedFile = ""
+	m.lastLoggedPct = -1
 	m.progress = xprogress.Snapshot{}
 	m.progressCollector = nil
 	m.detailsOpen = false
@@ -1072,10 +1082,27 @@ func (m model) state() state {
 
 func (m *model) appendLine(line string) {
 	m.scrollback = append(m.scrollback, line)
+	m.scrollTimes = append(m.scrollTimes, time.Now())
 	if len(m.scrollback) > maxScrollbackLines {
 		m.scrollback = m.scrollback[len(m.scrollback)-maxScrollbackLines:]
+		m.scrollTimes = m.scrollTimes[len(m.scrollTimes)-maxScrollbackLines:]
 	}
 	m.renderViewport()
+}
+
+func (m *model) appendProgressLog() {
+	if m.progress.CurrentFile != "" && m.progress.CurrentFile != m.lastLoggedFile {
+		m.lastLoggedFile = m.progress.CurrentFile
+		m.lastLoggedPct = -1
+		m.appendLine("开始传输 " + m.progress.CurrentFile)
+	}
+	if pct, ok := m.progress.Percent(); ok {
+		step := int(pct) / 10 * 10
+		if step >= m.lastLoggedPct+10 {
+			m.lastLoggedPct = step
+			m.appendLine(fmt.Sprintf("已传输 %s / %s  速度 %s/s  剩余 %s", xprogress.Bytes(m.progress.CompletedBytes), xprogress.Bytes(m.progress.TotalBytes), xprogress.Bytes(int64(m.progress.Speed)), m.progress.ETA()))
+		}
+	}
 }
 
 func (m *model) renderViewport() {
@@ -1099,6 +1126,9 @@ func (m model) atBottom() bool {
 // view
 
 func (m model) mainHeight() int {
+	if chooseLayout(m.width, m.height) == layoutWide {
+		return max(6, m.height-wideHeaderHeight-wideFooterHeight)
+	}
 	h := m.height - 6 // header 1 + status 1 + prompt 3 + shortcuts 1
 	if m.sidebarWidth() == 0 {
 		h-- // compact navigation row
@@ -1116,7 +1146,7 @@ func (m model) contentWidth() int {
 func (m model) sidebarWidth() int {
 	switch chooseLayout(m.width, m.height) {
 	case layoutWide:
-		return min(26, max(0, m.width-40))
+		return min(wideSidebarWidth, max(0, m.width-64))
 	case layoutStandard:
 		return min(18, max(0, m.width-40))
 	default:
@@ -1125,6 +1155,9 @@ func (m model) sidebarWidth() int {
 }
 
 func (m model) contentTop() int {
+	if chooseLayout(m.width, m.height) == layoutWide {
+		return wideHeaderHeight
+	}
 	top := 1 // session header
 	if m.sidebarWidth() == 0 {
 		top++ // compact navigation
@@ -1137,6 +1170,9 @@ func (m model) View() string { return m.frame().Text }
 func (m model) frame() Frame {
 	if m.width == 0 {
 		return Frame{Text: m.lang.t("status.loading")}
+	}
+	if chooseLayout(m.width, m.height) == layoutWide {
+		return m.wideFrame()
 	}
 
 	var b []string
@@ -1251,6 +1287,10 @@ func (m model) nsChipLayout(width int) []nsChip {
 	}
 	x := lipgloss.Width(stBrand.Render(brandName)) + 2 +
 		lipgloss.Width(stBanner.Render(m.lang.t("banner.title"))) + 2
+	if chooseLayout(m.width, m.height) == layoutWide {
+		prefix := m.lang.t("header.session") + ": Workstation  │  " + m.lang.t("header.account") + ": "
+		x = m.sidebarWidth() + 2 + lipgloss.Width(prefix)
+	}
 	cur := m.currentNS()
 	var out []nsChip
 	for _, ns := range m.namespaces {
@@ -1324,12 +1364,20 @@ func (m model) viewCompactNav() string {
 
 func (m model) hitRegions() []HitRegion {
 	regions := make([]HitRegion, 0, len(m.actions)+len(m.namespaces)+len(m.formFields()))
+	accountY := 0
+	if chooseLayout(m.width, m.height) == layoutWide {
+		accountY = 1
+	}
 	for _, c := range m.nsChipLayout(m.width) {
-		regions = append(regions, HitRegion{ID: "account:" + c.ns, Rect: Rect{X: c.x0, Y: 0, W: c.x1 - c.x0, H: 1}, Enabled: !m.running && !m.isSetting && !m.settingsPrompt, Action: UIAction{Kind: UIActionAccount, ID: c.ns}})
+		regions = append(regions, HitRegion{ID: "account:" + c.ns, Rect: Rect{X: c.x0, Y: accountY, W: c.x1 - c.x0, H: 1}, Enabled: !m.running && !m.isSetting && !m.settingsPrompt, Action: UIAction{Kind: UIActionAccount, ID: c.ns}})
 	}
 	if sw := m.sidebarWidth(); sw > 0 {
+		menuTop := 4
+		if chooseLayout(m.width, m.height) == layoutWide {
+			menuTop = 5
+		}
 		for i := range m.actions {
-			regions = append(regions, HitRegion{ID: "menu:" + m.actions[i].id, Rect: Rect{X: 0, Y: 4 + i, W: sw, H: 1}, Enabled: m.state() == stateMenu, Action: UIAction{Kind: UIActionMenu, Index: i, ID: m.actions[i].id}})
+			regions = append(regions, HitRegion{ID: "menu:" + m.actions[i].id, Rect: Rect{X: 0, Y: menuTop + i, W: sw, H: 1}, Enabled: m.state() == stateMenu, Action: UIAction{Kind: UIActionMenu, Index: i, ID: m.actions[i].id}})
 		}
 	}
 	if m.state() == stateForm && m.form != nil {
@@ -1349,6 +1397,12 @@ func (m model) hitRegions() []HitRegion {
 	}
 	regions = append(regions, m.pickerRegions()...)
 	regions = append(regions, m.chatRegions()...)
+	if chooseLayout(m.width, m.height) == layoutWide && m.state() == stateRun && m.running {
+		for _, button := range m.runButtons() {
+			regions = append(regions, HitRegion{ID: "button:" + button.id, Rect: Rect{X: button.x0, Y: button.y, W: button.x1 - button.x0, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: button.id}})
+		}
+		return regions
+	}
 	var buttons []uiButton
 	if m.isSetting {
 		buttons = m.settingsButtons()

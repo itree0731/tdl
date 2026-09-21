@@ -15,7 +15,7 @@ type Snapshot struct {
 	CompletedBytes, TotalBytes                                                   int64
 	Unknown                                                                      int
 	DiscoveryDone, Final                                                         bool
-	CurrentFile, Phase, ProcessInfo                                              string
+	CurrentFile, CurrentSourcePath, Phase, ProcessInfo                           string
 	Speed                                                                        float64
 	Status                                                                       Status
 	Errors                                                                       []string
@@ -153,6 +153,7 @@ func (c *Collector) Emit(e Event) {
 	c.snapshot.Expected = max(c.snapshot.Expected, e.TasksTotal)
 	if e.Kind != KindQueued && e.Kind != KindSkipped {
 		c.snapshot.CurrentFile = e.FileName
+		c.snapshot.CurrentSourcePath = e.SourcePath
 		c.snapshot.Phase = e.Phase
 	}
 	if e.Err != "" {

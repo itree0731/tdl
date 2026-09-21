@@ -58,6 +58,21 @@ var uiMessages = map[string][2]string{
 	"retry.uncertain.body":  {"Retrying can create a duplicate message. Continue only after checking the target chat.", "重试可能产生重复消息。请先检查目标会话，再决定是否继续。"},
 	"retry.anyway":          {"Retry anyway", "仍然重试"},
 	"retry.nopath":          {"No safe source path is available for retry.", "没有可安全重试的源文件路径。"},
+	"sidebar.workbench":     {"TRANSFER WORKBENCH", "传 输 工 作 台"},
+	"header.session":        {"Session", "当前会话"},
+	"header.account":        {"Account", "账号"},
+	"header.network":        {"Network", "网络"},
+	"header.connected":      {"Connected", "正常"},
+	"footer.task":           {"Task", "任务"},
+	"preview.waiting":       {"Waiting for the first media item", "等待第一个媒体项目"},
+	"run.transferred":       {"Transferred", "已传输"},
+	"run.speed":             {"Speed", "速度"},
+	"run.eta":               {"Time remaining", "剩余时间"},
+	"run.logs":              {"Transfer log", "传输日志"},
+	"run.autoscroll":        {"Auto scroll", "自动滚动"},
+	"run.time":              {"Time", "时间"},
+	"run.level":             {"Level", "级别"},
+	"run.message":           {"Message", "消息"},
 }
 
 var fieldHelp = map[string][2]string{

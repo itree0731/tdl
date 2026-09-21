@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/iyear/tdl/pkg/progress"
 )
 
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
@@ -205,6 +206,49 @@ func assertFrameFits(t *testing.T, m model, width, height int) {
 		if got := lipgloss.Width(line); got > width {
 			t.Fatalf("%dx%d row %d has width %d:\n%s", width, height, i, got, out)
 		}
+	}
+}
+
+type fixturePreview struct{}
+
+func (fixturePreview) Render(string, int, int, ColorProfile) (string, error) {
+	return "▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀", nil
+}
+
+func TestRenderWideWorkbenchSnapshot(t *testing.T) {
+	isolateSettings(t)
+	m := sized(t, newModel(stubExec, []string{"default", "itree"}), 200, 60)
+	m.lang = LangZh
+	m.running = true
+	m.showOutput = true
+	m.detailsOpen = true
+	m.runLabel = "上传"
+	m.runStart = time.Now().Add(-time.Minute)
+	m.currentRun = RunSpec{ActionID: "up", Display: RunDisplay{Title: "上传"}, Inputs: []InputRef{{Path: "fixture.mp4", Kind: "file"}}}
+	m.mediaPreview = fixturePreview{}
+	m.progress = progressFixture()
+	for _, line := range []string{"$ tdl up -p fixture.mp4", "开始上传 fixture.mp4", "连接到 Telegram 服务器", "已传输 2.96 GiB / 4.32 GiB"} {
+		m.appendLine(line)
+	}
+	out := renderPlain(m)
+	t.Log("\n" + out)
+	for _, want := range []string{"当前会话", "当前项目", "任务统计", "传输日志", "fixture.mp4", "69%"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("wide workbench missing %q", want)
+		}
+	}
+	if strings.Count(out, "ctrl+c") != 1 {
+		t.Errorf("wide workbench has duplicate stop controls:\n%s", out)
+	}
+	assertFrameFits(t, m, 200, 60)
+}
+
+func progressFixture() progress.Snapshot {
+	return progress.Snapshot{
+		Discovered: 27, Expected: 27, Pending: 3, Running: 4, Succeeded: 20,
+		CompletedBytes: 2960 * 1024 * 1024, TotalBytes: 4320 * 1024 * 1024,
+		DiscoveryDone: true, CurrentFile: "fixture.mp4", CurrentSourcePath: "fixture.mp4",
+		Phase: "transferring", Speed: 38.6 * 1024 * 1024,
 	}
 }
 
