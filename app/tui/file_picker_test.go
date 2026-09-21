@@ -232,6 +232,41 @@ func TestRecursiveScanCanBeCanceledWithoutApplyingSelection(t *testing.T) {
 	}
 }
 
+func TestScanProblemsRequireExplicitSkipBeforeApplying(t *testing.T) {
+	isolateSettings(t)
+	file := filepath.Join(t.TempDir(), "ok.mp4")
+	if err := os.WriteFile(file, []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := sized(t, newModel(stubExec, nil), 120, 30)
+	r, _ := m.openMenuItem(indexOfAction(m, "up"))
+	m = asModel(r)
+	m.picker = &filePicker{request: PickerRequest{Mode: PickFilesAndDirectories, Purpose: "upload_paths"}, cwd: filepath.Dir(file), selected: map[string]bool{}, pendingPaths: []string{file}}
+	m.pickerField = 0
+	plan := SelectionPlan{Paths: []string{file}, Files: []SelectedFile{{Path: file, Size: 2}}, TotalBytes: 2, Problems: []PathProblem{{Path: "denied", Err: "access denied"}}}
+	r, _ = m.applyFilePickerPlan(plan)
+	m = asModel(r)
+	if m.picker == nil || m.picker.problemPlan == nil || len(m.form.fields[0].paths) != 0 {
+		t.Fatal("problem plan was applied without confirmation")
+	}
+	frame := m.frame()
+	var skip *HitRegion
+	for i := range frame.Regions {
+		if frame.Regions[i].ID == "picker.problem.skip" {
+			skip = &frame.Regions[i]
+			break
+		}
+	}
+	if skip == nil {
+		t.Fatal("problem page has no Skip unreadable control")
+	}
+	r, _ = m.Update(tea.MouseMsg{X: skip.Rect.X, Y: skip.Rect.Y, Button: tea.MouseButtonLeft})
+	m = asModel(r)
+	if m.picker != nil || len(m.form.fields[0].paths) != 1 || m.form.fields[0].paths[0] != file {
+		t.Fatalf("confirmed skip did not apply readable files: %+v", m.form.fields[0].paths)
+	}
+}
+
 func deliverSelectionScanIgnored(t *testing.T, m *model, cmd tea.Cmd) {
 	t.Helper()
 	msg := cmd()

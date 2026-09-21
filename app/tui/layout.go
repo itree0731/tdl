@@ -208,6 +208,25 @@ func (m model) activateButton(id string) (tea.Model, tea.Cmd) {
 		m.changePickerSort(sortSize)
 	case "picker.sort.type":
 		m.changePickerSort(sortType)
+	case "picker.problem.retry":
+		if m.picker != nil {
+			m.picker.problemPlan = nil
+			m.picker.err = ""
+			return m.closeFilePicker(true)
+		}
+	case "picker.problem.skip":
+		if m.picker != nil && m.picker.problemPlan != nil {
+			plan := *m.picker.problemPlan
+			plan.Problems = nil
+			m.picker.problemPlan = nil
+			m.picker.err = ""
+			return m.applyFilePickerPlanMode(plan, true)
+		}
+	case "picker.problem.cancel":
+		if m.picker != nil {
+			m.picker.problemPlan = nil
+			m.picker.err = ""
+		}
 	case "chat.confirm":
 		return m.closeChatSelector(true)
 	case "chat.more":

@@ -87,6 +87,8 @@ func (m model) viewFilePicker() string {
 	}
 	if p.scanner != nil {
 		rows = append(rows, stFieldFocus.Render("◐ "+m.lang.t("picker.scanning"))+"  "+stSys.Render(p.summary()))
+	} else if p.problemPlan != nil {
+		rows = append(rows, stErr.Render(fmt.Sprintf(m.lang.t("picker.problems"), len(p.problemPlan.Problems))))
 	} else if p.err != "" {
 		rows = append(rows, stErr.Render(ansi.Truncate(p.err, max(1, width-2), "…")))
 	} else {
@@ -95,6 +97,8 @@ func (m model) viewFilePicker() string {
 	buttons := stFieldFocus.Render("[ "+m.lang.t("picker.confirm")+" ]") + "  " + stHint.Render("[ "+m.lang.t("picker.parent")+" ]  [ "+m.lang.t("picker.cancel")+" ]")
 	if p.scanner != nil {
 		buttons = activeTheme.warning.Render("[ " + m.lang.t("picker.cancel.scan") + " ]")
+	} else if p.problemPlan != nil {
+		buttons = stFieldFocus.Render("[ "+m.lang.t("picker.problem.retry")+" ]") + "  " + activeTheme.warning.Render("[ "+m.lang.t("picker.problem.skip")+" ]") + "  " + stHint.Render("[ "+m.lang.t("picker.problem.cancel")+" ]")
 	}
 	rows = append(rows, buttons)
 	return lipgloss.NewStyle().Width(width).Height(m.mainHeight()).Padding(0, 1).Render(fitScreen(strings.Join(rows, "\n"), width, m.mainHeight()))
@@ -117,6 +121,23 @@ func (m model) pickerRegions() []HitRegion {
 	if m.picker.scanner != nil {
 		y := m.contentTop() + m.mainHeight() - 1
 		return []HitRegion{{ID: "picker.cancel", Rect: Rect{X: x + 1, Y: y, W: 18, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: "picker.cancel"}}}
+	}
+	if m.picker.problemPlan != nil {
+		y := m.contentTop() + m.mainHeight() - 1
+		xPos := x + 1
+		buttons := []struct{ id, label string }{
+			{"picker.problem.retry", m.lang.t("picker.problem.retry")},
+			{"picker.problem.skip", m.lang.t("picker.problem.skip")},
+			{"picker.problem.cancel", m.lang.t("picker.problem.cancel")},
+		}
+		regions := make([]HitRegion, 0, len(buttons))
+		for _, button := range buttons {
+			label := "[ " + button.label + " ]"
+			w := lipgloss.Width(label)
+			regions = append(regions, HitRegion{ID: button.id, Rect: Rect{X: xPos, Y: y, W: w, H: 1}, Enabled: true, Action: UIAction{Kind: UIActionButton, ID: button.id}})
+			xPos += w + 2
+		}
+		return regions
 	}
 	first, count := m.pickerWindow()
 	regions := make([]HitRegion, 0, count+10)

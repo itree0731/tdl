@@ -990,6 +990,10 @@ func (m model) closeFilePicker(apply bool) (tea.Model, tea.Cmd) {
 }
 
 func (m model) applyFilePickerPlan(plan SelectionPlan) (tea.Model, tea.Cmd) {
+	return m.applyFilePickerPlanMode(plan, false)
+}
+
+func (m model) applyFilePickerPlanMode(plan SelectionPlan, skipProblems bool) (tea.Model, tea.Cmd) {
 	if m.picker == nil || m.form == nil || m.pickerField >= len(m.form.fields) {
 		return m, nil
 	}
@@ -998,7 +1002,9 @@ func (m model) applyFilePickerPlan(plan SelectionPlan) (tea.Model, tea.Cmd) {
 	if len(paths) == 0 {
 		paths = append(paths, plan.Paths...)
 	}
-	if m.picker.request.Mode != PickSaveFile && len(plan.Problems) > 0 {
+	if !skipProblems && m.picker.request.Mode != PickSaveFile && len(plan.Problems) > 0 {
+		copyPlan := plan
+		m.picker.problemPlan = &copyPlan
 		m.picker.err = plan.Problems[0].Path + ": " + plan.Problems[0].Err
 		return m, nil
 	}

@@ -43,6 +43,7 @@ type filePicker struct {
 	lastClickAt   time.Time
 	scanner       *selectionScanner
 	pendingPaths  []string
+	problemPlan   *SelectionPlan
 }
 
 type selectionScanner struct {
