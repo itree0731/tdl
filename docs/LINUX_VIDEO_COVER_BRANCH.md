@@ -23,6 +23,6 @@ tdl forward --mode clone --from exported.json --to destination --cover-at 12s
 
 ## 验证
 
-`scripts/verify-linux-cover.sh` 运行 root（排除需要外部 Teamgram 服务的测试包）、core、extension 的测试与 vet，以及相关 race 检查，并构建 Linux 可执行文件。`scripts/e2e-video-cover.sh` 用临时账号副本向该账号的 Saved Messages 上传、克隆一段带测试标记的视频，再检查服务器返回的封面与播放时间；该测试会产生两条真实消息。
+`scripts/verify-linux-cover.sh` 运行 root（排除需要外部 Teamgram 服务的测试包）、core、extension 的测试与 vet，以及相关 race 检查，并用 `CGO_ENABLED=0` 构建可移植的 Linux amd64 可执行文件。`scripts/e2e-video-cover.sh` 用临时账号副本向该账号的 Saved Messages 上传、克隆一段带测试标记的视频，再检查服务器返回的封面与播放时间；该测试会产生两条真实消息。
 
 在当前可用的 `itree` 账号上，上传与克隆产生了不同的 Telegram 文件 ID，缩略图为 320×180，播放时间戳为零，但服务端没有保留高清 `VideoCover` 字段。用现有 TMT 在同一账号做差分上传也得到相同结果。该账号仍可见视频缩略图；高清 `VideoCover` 的服务端保留情况需要在其他有效账号上继续验证。旧版 `default` 账号的会话副本目前未获 Telegram 授权，没有用它声称通过。
