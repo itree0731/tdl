@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
@@ -90,10 +91,12 @@ func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Opti
 	}
 
 	defer func() { // save progress
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
 		if rerr != nil { // download is interrupted
-			multierr.AppendInto(&rerr, saveProgress(ctx, kvd, it))
+			multierr.AppendInto(&rerr, saveProgress(cleanupCtx, kvd, it))
 		} else { // if finished, we should clear resume key
-			multierr.AppendInto(&rerr, kvd.Delete(ctx, key.Resume(it.Fingerprint())))
+			multierr.AppendInto(&rerr, kvd.Delete(cleanupCtx, key.Resume(it.Fingerprint())))
 		}
 	}()
 

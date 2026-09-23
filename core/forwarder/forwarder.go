@@ -3,6 +3,7 @@ package forwarder
 import (
 	"context"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/go-faster/errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/iyear/tdl/core/dcpool"
 	"github.com/iyear/tdl/core/logctx"
 	"github.com/iyear/tdl/core/tmedia"
+	"github.com/iyear/tdl/core/transfer"
 	"github.com/iyear/tdl/core/util/tutil"
 )
 
@@ -25,10 +27,12 @@ import (
 type Mode int
 
 type Options struct {
-	Pool     dcpool.Pool
-	Threads  int
-	Iter     Iter
-	Progress Progress
+	Pool       dcpool.Pool
+	Threads    int
+	Iter       Iter
+	Progress   Progress
+	VideoCover bool
+	CoverAt    string
 }
 
 type Forwarder struct {
@@ -51,6 +55,7 @@ func New(opts Options) *Forwarder {
 }
 
 func (f *Forwarder) Forward(ctx context.Context) error {
+	var failures []error
 	for f.opts.Iter.Next(ctx) {
 		elem := f.opts.Iter.Value()
 		if _, ok := f.sent[f.tuple(elem.From(), elem.Msg())]; ok {
@@ -61,10 +66,15 @@ func (f *Forwarder) Forward(ctx context.Context) error {
 		if _, ok := elem.Msg().GetGroupedID(); ok && elem.AsGrouped() {
 			grouped, err := tutil.GetGroupedMessages(ctx, f.opts.Pool.Default(ctx), elem.From().InputPeer(), elem.Msg())
 			if err != nil {
+				failures = append(failures, errors.Wrap(err, "get grouped messages"))
 				continue
 			}
 
 			if err = f.forwardMessage(ctx, elem, grouped...); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+				failures = append(failures, err)
 				continue
 			}
 
@@ -76,11 +86,17 @@ func (f *Forwarder) Forward(ctx context.Context) error {
 			if errors.Is(err, context.Canceled) {
 				return err
 			}
+			failures = append(failures, err)
 			continue
 		}
 	}
-
-	return f.opts.Iter.Err()
+	if err := f.opts.Iter.Err(); err != nil {
+		failures = append(failures, err)
+	}
+	if len(failures) > 0 {
+		return &transfer.BatchError{Errors: failures}
+	}
+	return ctx.Err()
 }
 
 func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*tg.Message) (rerr error) {
@@ -147,7 +163,8 @@ func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*t
 
 		// we should clone photo and document via re-upload, it will be banned if we forward it directly.
 		// but other media can be forwarded directly via copy
-		if (!protectedDialog(elem.From()) && !protectedMessage(msg)) || !photoOrDocument(msg.Media) {
+		video := isVideoDocument(msg.Media)
+		if !shouldReupload(msg.Media, protectedDialog(elem.From()) || protectedMessage(msg)) {
 			media, ok := tmedia.ConvInputMedia(msg.Media)
 			if !ok {
 				return nil, errors.Errorf("can't convert message %d to input class directly", msg.ID)
@@ -165,9 +182,10 @@ func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*t
 			return nil, errors.Errorf("unsupported media %T", msg.Media)
 		}
 
-		mediaFile, err := f.cloneMedia(ctx, cloneOptions{
+		cloned, err := f.cloneMedia(ctx, cloneOptions{
 			elem:  elem,
 			media: media,
+			cover: video && f.opts.VideoCover,
 			progress: &wrapProgress{
 				elem:     elem,
 				progress: f.opts.Progress,
@@ -185,7 +203,7 @@ func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*t
 		case *tg.MessageMediaPhoto:
 			photo := &tg.InputMediaUploadedPhoto{
 				Spoiler:    m.Spoiler,
-				File:       mediaFile,
+				File:       cloned.file,
 				TTLSeconds: m.TTLSeconds,
 			}
 			photo.SetFlags()
@@ -201,14 +219,17 @@ func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*t
 				NosoundVideo: false, // do not set
 				ForceFile:    false, // do not set
 				Spoiler:      m.Spoiler,
-				File:         mediaFile,
+				File:         cloned.file,
 				MimeType:     doc.MimeType,
 				Attributes:   doc.Attributes,
+				VideoCover:   cloned.cover,
 				Stickers:     nil, // do not set
 				TTLSeconds:   0,   // do not set
 			}
 
-			if thumb, ok := tmedia.GetDocumentThumb(doc); ok {
+			if cloned.thumb != nil {
+				document.Thumb = cloned.thumb
+			} else if thumb, ok := tmedia.GetDocumentThumb(doc); ok {
 				thumbFile, err := f.cloneMedia(ctx, cloneOptions{
 					elem:     elem,
 					media:    thumb,
@@ -218,7 +239,7 @@ func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*t
 					return nil, errors.Wrap(err, "clone thumb")
 				}
 
-				document.Thumb = thumbFile
+				document.Thumb = thumbFile.file
 			}
 
 			document.SetFlags()
@@ -304,6 +325,9 @@ func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*t
 			for _, gm := range grouped {
 				m, err := convForwardedMedia(gm)
 				if err != nil {
+					if isVideoDocument(gm.Media) {
+						return errors.Wrap(err, "clone video in media group")
+					}
 					log.Debug("Can't convert forwarded media", zap.Error(err))
 					continue
 				}
@@ -344,6 +368,9 @@ func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*t
 
 		media, err := convForwardedMedia(elem.Msg())
 		if err != nil {
+			if isVideoDocument(elem.Msg().Media) {
+				return errors.Wrap(err, "clone video")
+			}
 			log.Debug("Can't convert forwarded media", zap.Error(err))
 			return forwardTextOnly(elem.Msg())
 		}
@@ -436,6 +463,27 @@ func photoOrDocument(media tg.MessageMediaClass) bool {
 	default:
 		return false
 	}
+}
+
+func isVideoDocument(media tg.MessageMediaClass) bool {
+	message, ok := media.(*tg.MessageMediaDocument)
+	if !ok {
+		return false
+	}
+	document, ok := message.Document.(*tg.Document)
+	if !ok {
+		return false
+	}
+	for _, attribute := range document.Attributes {
+		if _, ok := attribute.(*tg.DocumentAttributeVideo); ok {
+			return true
+		}
+	}
+	return strings.HasPrefix(document.MimeType, "video/")
+}
+
+func shouldReupload(media tg.MessageMediaClass, protected bool) bool {
+	return photoOrDocument(media) && (protected || isVideoDocument(media))
 }
 
 func mediaSizeSum(msg *tg.Message, grouped ...*tg.Message) (int64, error) {

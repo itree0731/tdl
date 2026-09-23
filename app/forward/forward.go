@@ -29,14 +29,16 @@ import (
 )
 
 type Options struct {
-	From   []string
-	To     string
-	Edit   string
-	Mode   forwarder.Mode
-	Silent bool
-	DryRun bool
-	Single bool
-	Desc   bool
+	From       []string
+	To         string
+	Edit       string
+	Mode       forwarder.Mode
+	Silent     bool
+	DryRun     bool
+	Single     bool
+	Desc       bool
+	VideoCover bool
+	CoverAt    string
 }
 
 func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Options) (rerr error) {
@@ -98,8 +100,10 @@ func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Opti
 			grouped: !opts.Single,
 			delay:   viper.GetDuration(consts.FlagDelay),
 		}),
-		Progress: newProgress(fwProgress),
-		Threads:  viper.GetInt(consts.FlagThreads),
+		Progress:   newProgress(fwProgress),
+		Threads:    viper.GetInt(consts.FlagThreads),
+		VideoCover: opts.VideoCover,
+		CoverAt:    opts.CoverAt,
 	})
 
 	go fwProgress.Render()

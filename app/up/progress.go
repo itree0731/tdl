@@ -1,6 +1,7 @@
 package up
 
 import (
+	stderrors "errors"
 	"fmt"
 	"os"
 	"sync"
@@ -18,6 +19,8 @@ type progress struct {
 	pw       pw.Writer
 	trackers *sync.Map // map[tuple]*pw.Tracker
 }
+
+var removeUploadedSource = os.Remove
 
 type tuple struct {
 	name string
@@ -48,43 +51,44 @@ func (p *progress) OnUpload(elem uploader.Elem, state uploader.ProgressState) {
 }
 
 func (p *progress) OnDone(elem uploader.Elem, err error) {
+	_ = p.Finalize(elem, err)
+}
+
+func (p *progress) Finalize(elem uploader.Elem, transferErr error) error {
 	tracker, ok := p.trackers.Load(p.tuple(elem))
 	if !ok {
-		return
+		return fmt.Errorf("missing upload progress tracker for %s", elem.File().Name())
 	}
 	t := tracker.(*pw.Tracker)
 	e := elem.(*iterElem)
-
-	if err := p.closeFile(e); err != nil {
-		p.fail(t, elem, errors.Wrap(err, "close file"))
-		return
-	}
-
+	err := finalizeUploadFile(e, transferErr)
 	if err != nil {
-		p.fail(t, elem, errors.Wrap(err, "progress"))
-		return
+		p.fail(t, elem, err)
+		return err
 	}
-
-	if e.remove {
-		if err := os.Remove(e.file.File.Name()); err != nil {
-			p.fail(t, elem, errors.Wrap(err, "remove file"))
-			return
-		}
-	}
+	t.MarkAsDone()
+	return nil
 }
 
-func (p *progress) closeFile(e *iterElem) error {
-	if err := e.file.Close(); err != nil {
-		return errors.Wrap(err, "close file")
+func finalizeUploadFile(e *iterElem, transferErr error) error {
+	err := transferErr
+	if closeErr := closeUploadFile(e); closeErr != nil {
+		err = stderrors.Join(err, errors.Wrap(closeErr, "close upload file"))
 	}
-
-	if e.thumb != nil {
-		if err := e.thumb.Close(); err != nil {
-			return errors.Wrap(err, "close thumb")
+	if transferErr == nil && err == nil && e.remove {
+		if removeErr := removeUploadedSource(e.file.File.Name()); removeErr != nil {
+			err = fmt.Errorf("uploaded successfully; source deletion failed: %w", removeErr)
 		}
 	}
+	return err
+}
 
-	return nil
+func closeUploadFile(e *iterElem) error {
+	err := e.file.Close()
+	if e.thumb != nil {
+		err = stderrors.Join(err, e.thumb.Close())
+	}
+	return err
 }
 
 func (p *progress) fail(t *pw.Tracker, elem uploader.Elem, err error) {

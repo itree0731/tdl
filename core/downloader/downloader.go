@@ -5,8 +5,8 @@ import (
 
 	"github.com/go-faster/errors"
 	"github.com/gotd/td/telegram/downloader"
+	"github.com/iyear/tdl/core/transfer"
 	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/iyear/tdl/core/dcpool"
 	"github.com/iyear/tdl/core/logctx"
@@ -34,40 +34,16 @@ func New(opts Options) *Downloader {
 }
 
 func (d *Downloader) Download(ctx context.Context, limit int) error {
-	wg, wgctx := errgroup.WithContext(ctx)
-	wg.SetLimit(limit)
-
-	for d.opts.Iter.Next(wgctx) {
-		elem := d.opts.Iter.Value()
-
-		wg.Go(func() (rerr error) {
+	return transfer.Run(ctx, limit, d.opts.Iter.Next, d.opts.Iter.Value, d.opts.Iter.Err,
+		func(workCtx context.Context, elem Elem) error {
 			d.opts.Progress.OnAdd(elem)
-			defer func() { d.opts.Progress.OnDone(elem, rerr) }()
-
-			if err := d.download(wgctx, elem); err != nil {
-				// canceled by user, so we directly return error to stop all
-				if errors.Is(err, context.Canceled) {
-					return errors.Wrap(err, "download")
-				}
-
-				// don't return error, just log it
-				logctx.
-					From(ctx).
-					Error("Download error",
-						zap.Any("element", elem),
-						zap.Error(err),
-					)
+			err := d.download(workCtx, elem)
+			if finalizer, ok := d.opts.Progress.(Completion); ok {
+				return finalizer.Finalize(elem, err)
 			}
-
-			return nil
+			d.opts.Progress.OnDone(elem, err)
+			return err
 		})
-	}
-
-	if err := d.opts.Iter.Err(); err != nil {
-		return errors.Wrap(err, "iter")
-	}
-
-	return wg.Wait()
 }
 
 func (d *Downloader) download(ctx context.Context, elem Elem) error {

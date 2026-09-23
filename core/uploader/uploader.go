@@ -2,6 +2,7 @@ package uploader
 
 import (
 	"context"
+	stderrors "errors"
 	"io"
 	"time"
 
@@ -12,11 +13,12 @@ import (
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	"github.com/iyear/tdl/core/transfer"
 	"github.com/samber/lo"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/iyear/tdl/core/util/fsutil"
 	"github.com/iyear/tdl/core/util/mediautil"
+	"github.com/iyear/tdl/core/videocover"
 )
 
 // MaxPartSize refer to https://core.telegram.org/api/files#uploading-files
@@ -27,10 +29,12 @@ type Uploader struct {
 }
 
 type Options struct {
-	Client   *tg.Client
-	Threads  int
-	Iter     Iter
-	Progress Progress
+	Client     *tg.Client
+	Threads    int
+	Iter       Iter
+	Progress   Progress
+	VideoCover bool
+	CoverAt    string
 }
 
 func New(o Options) *Uploader {
@@ -38,41 +42,51 @@ func New(o Options) *Uploader {
 }
 
 func (u *Uploader) Upload(ctx context.Context, limit int) error {
-	wg, wgctx := errgroup.WithContext(ctx)
-	wg.SetLimit(limit)
-
-	for u.opts.Iter.Next(wgctx) {
-		elem := u.opts.Iter.Value()
-
-		wg.Go(func() (rerr error) {
+	return transfer.Run(ctx, limit, u.opts.Iter.Next, u.opts.Iter.Value, u.opts.Iter.Err,
+		func(workCtx context.Context, elem Elem) error {
 			u.opts.Progress.OnAdd(elem)
-			defer func() { u.opts.Progress.OnDone(elem, rerr) }()
-
-			if err := u.upload(wgctx, elem); err != nil {
-				// canceled by user, so we directly return error to stop all
-				if errors.Is(err, context.Canceled) {
-					return errors.Wrap(err, "upload")
-				}
-
-				// don't return error, just log it
+			err := u.upload(workCtx, elem)
+			if finalizer, ok := u.opts.Progress.(Completion); ok {
+				return finalizer.Finalize(elem, err)
 			}
-
-			return nil
+			u.opts.Progress.OnDone(elem, err)
+			return err
 		})
-	}
-
-	if err := u.opts.Iter.Err(); err != nil {
-		return errors.Wrap(err, "iter")
-	}
-
-	return wg.Wait()
 }
 
-func (u *Uploader) upload(ctx context.Context, elem Elem) error {
+func (u *Uploader) upload(ctx context.Context, elem Elem) (rerr error) {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+	if _, err := elem.File().Seek(0, io.SeekStart); err != nil {
+		return errors.Wrap(err, "seek file")
+	}
+	mime, err := mimetype.DetectReader(elem.File())
+	if err != nil {
+		return errors.Wrap(err, "detect mime")
+	}
+	if _, err = elem.File().Seek(0, io.SeekStart); err != nil {
+		return errors.Wrap(err, "seek file")
+	}
+	var prepared videocover.Prepared
+	var videoDuration time.Duration
+	var videoWidth, videoHeight int
+	if u.opts.VideoCover && mediautil.IsVideo(mime.String()) {
+		pathFile, ok := elem.File().(interface{ Path() string })
+		if !ok {
+			return errors.New("video cover requires a local file path")
+		}
+		videoDuration, videoWidth, videoHeight, err = videocover.Probe(ctx, pathFile.Path())
+		if err != nil {
+			return errors.Wrap(err, "video cover metadata")
+		}
+		prepared, err = videocover.Prepare(ctx, pathFile.Path(), u.opts.CoverAt, videoDuration)
+		if err != nil {
+			return err
+		}
+		defer func() { rerr = stderrors.Join(rerr, prepared.Close()) }()
 	}
 
 	up := uploader.NewUploader(u.opts.Client).
@@ -86,14 +100,6 @@ func (u *Uploader) upload(ctx context.Context, elem Elem) error {
 	f, err := up.Upload(ctx, uploader.NewUpload(elem.File().Name(), elem.File(), elem.File().Size()))
 	if err != nil {
 		return errors.Wrap(err, "upload file")
-	}
-
-	if _, err = elem.File().Seek(0, io.SeekStart); err != nil {
-		return errors.Wrap(err, "seek file")
-	}
-	mime, err := mimetype.DetectReader(elem.File())
-	if err != nil {
-		return errors.Wrap(err, "detect mime")
 	}
 
 	// here convert underlying entities to formatters for message caption
@@ -127,6 +133,14 @@ func (u *Uploader) upload(ctx context.Context, elem Elem) error {
 		// upload as photo
 		media = message.UploadedPhoto(f, caption)
 	case mediautil.IsVideo(mime.String()):
+		if prepared.Cover != "" {
+			thumbFile, coverPhoto, coverErr := videocover.Upload(ctx, u.opts.Client, elem.To(), prepared)
+			if coverErr != nil {
+				return coverErr
+			}
+			media = message.Media(videocover.VideoDocument(f, thumbFile, coverPhoto, mime.String(), elem.File().Name(), int(videoDuration.Seconds()), videoWidth, videoHeight), caption)
+			break
+		}
 		// reset reader
 		if _, err = elem.File().Seek(0, io.SeekStart); err != nil {
 			return errors.Wrap(err, "seek file")

@@ -16,30 +16,38 @@ import (
 	"github.com/iyear/tdl/core/tmedia"
 	tuploader "github.com/iyear/tdl/core/uploader"
 	"github.com/iyear/tdl/core/util/tutil"
+	"github.com/iyear/tdl/core/videocover"
 )
 
 type cloneOptions struct {
 	elem     Elem
 	media    *tmedia.Media
 	progress progressAdd
+	cover    bool
+}
+
+type clonedMedia struct {
+	file  tg.InputFileClass
+	thumb tg.InputFileClass
+	cover *tg.InputPhoto
 }
 
 type progressAdd interface {
 	add(n int64)
 }
 
-func (f *Forwarder) cloneMedia(ctx context.Context, opts cloneOptions, dryRun bool) (_ tg.InputFileClass, rerr error) {
+func (f *Forwarder) cloneMedia(ctx context.Context, opts cloneOptions, dryRun bool) (_ clonedMedia, rerr error) {
 	// if dry run, just return empty input file
 	if dryRun {
 		// directly call progress callback
 		opts.progress.add(opts.media.Size * 2)
 
-		return &tg.InputFile{}, nil
+		return clonedMedia{file: &tg.InputFile{}}, nil
 	}
 
 	temp, err := os.CreateTemp("", "tdl_*")
 	if err != nil {
-		return nil, errors.Wrap(err, "create temp file")
+		return clonedMedia{}, errors.Wrap(err, "create temp file")
 	}
 	defer func() {
 		multierr.AppendInto(&rerr, temp.Close())
@@ -57,13 +65,21 @@ func (f *Forwarder) cloneMedia(ctx context.Context, opts cloneOptions, dryRun bo
 			opts: opts,
 		})
 	if err != nil {
-		return nil, errors.Wrap(err, "download")
+		return clonedMedia{}, errors.Wrap(err, "download")
+	}
+	var prepared videocover.Prepared
+	if opts.cover {
+		prepared, err = videocover.Prepare(ctx, temp.Name(), f.opts.CoverAt, 0)
+		if err != nil {
+			return clonedMedia{}, errors.Wrap(err, "prepare cloned video cover")
+		}
+		defer func() { multierr.AppendInto(&rerr, prepared.Close()) }()
 	}
 
 	var file tg.InputFileClass
 
 	if _, err = temp.Seek(0, io.SeekStart); err != nil {
-		return nil, errors.Wrap(err, "seek")
+		return clonedMedia{}, errors.Wrap(err, "seek")
 	}
 
 	upload := uploader.NewUpload(opts.media.Name, temp, opts.media.Size)
@@ -76,10 +92,16 @@ func (f *Forwarder) cloneMedia(ctx context.Context, opts cloneOptions, dryRun bo
 		}).
 		Upload(ctx, upload)
 	if err != nil {
-		return nil, errors.Wrap(err, "upload")
+		return clonedMedia{}, errors.Wrap(err, "upload")
 	}
-
-	return file, nil
+	result := clonedMedia{file: file}
+	if opts.cover {
+		result.thumb, result.cover, err = videocover.Upload(ctx, f.forwardClient(ctx, opts.elem), opts.elem.To().InputPeer(), prepared)
+		if err != nil {
+			return clonedMedia{}, errors.Wrap(err, "upload cloned video cover")
+		}
+	}
+	return result, nil
 }
 
 type writeAt struct {

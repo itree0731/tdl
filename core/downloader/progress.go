@@ -13,6 +13,11 @@ type Progress interface {
 	// TODO: OnLog to log something that is not an error but should be sent to the user
 }
 
+// Completion reports required finalization errors to the batch runner.
+type Completion interface {
+	Finalize(elem Elem, transferErr error) error
+}
+
 type ProgressState struct {
 	Downloaded int64
 	Total      int64

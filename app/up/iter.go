@@ -2,6 +2,8 @@ package up
 
 import (
 	"context"
+	stderrors "errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -41,9 +43,11 @@ type iter struct {
 	delay   time.Duration
 	manager *peers.Manager
 
-	cur  int
-	err  error
-	file uploader.Elem
+	cur      int
+	err      error
+	file     uploader.Elem
+	failures []error
+	prepare  func(context.Context, *File) (uploader.Elem, error)
 }
 
 func newIter(files []*File, to, caption *vm.Program, chat string, topic int, photo, remove bool, delay time.Duration, manager *peers.Manager) *iter {
@@ -72,26 +76,27 @@ func (i *iter) Next(ctx context.Context) bool {
 	default:
 	}
 
-	if i.cur >= len(i.files) || i.err != nil {
-		return false
+	for i.cur < len(i.files) && i.err == nil {
+		if i.delay > 0 && i.cur > 0 {
+			time.Sleep(i.delay)
+		}
+		cur := i.files[i.cur]
+		i.cur++
+		var file uploader.Elem
+		var err error
+		if i.prepare != nil {
+			file, err = i.prepare(ctx, cur)
+		} else {
+			file, err = i.next(ctx, cur)
+		}
+		if err != nil {
+			i.failures = append(i.failures, fmt.Errorf("prepare %q: %w", cur.File, err))
+			continue
+		}
+		i.file = file
+		return true
 	}
-
-	// if delay is set, sleep for a while for each iteration
-	if i.delay > 0 && i.cur > 0 { // skip first delay
-		time.Sleep(i.delay)
-	}
-
-	cur := i.files[i.cur]
-	i.cur++
-
-	file, err := i.next(ctx, cur)
-	if err != nil {
-		i.err = err
-		return false
-	}
-
-	i.file = file
-	return true
+	return false
 }
 
 func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
@@ -104,16 +109,19 @@ func (i *iter) next(ctx context.Context, cur *File) (*iterElem, error) {
 
 	to, thread, err := i.resolveDest(ctx, env)
 	if err != nil {
+		_ = file.Close()
 		return nil, errors.Wrap(err, "resolve destination")
 	}
 
 	caption, err := i.resolveCaption(env)
 	if err != nil {
+		_ = file.Close()
 		return nil, errors.Wrap(err, "resolve caption")
 	}
 
 	thumb, err := i.resolveThumb(cur.Thumb)
 	if err != nil {
+		_ = file.Close()
 		return nil, errors.Wrap(err, "resolve thumbnail")
 	}
 
@@ -253,5 +261,5 @@ func (i *iter) Value() uploader.Elem {
 }
 
 func (i *iter) Err() error {
-	return i.err
+	return stderrors.Join(append(i.failures, i.err)...)
 }

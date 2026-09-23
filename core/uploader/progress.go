@@ -13,6 +13,11 @@ type Progress interface {
 	// TODO: OnLog to log something that is not an error but should be sent to the user
 }
 
+// Completion reports local close/cleanup errors as part of the batch result.
+type Completion interface {
+	Finalize(elem Elem, transferErr error) error
+}
+
 type ProgressState struct {
 	Uploaded int64
 	Total    int64

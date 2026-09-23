@@ -3,6 +3,7 @@ log
 .tdl
 .vscode
 downloads
+/dist/
 *.exe
 tdl
 .hugo_build.lock
